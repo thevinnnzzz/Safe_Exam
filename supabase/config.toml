@@ -1,0 +1,4 @@
+project_id = "safe-exam"
+
+[functions.auth-login]
+  verify_jwt = true

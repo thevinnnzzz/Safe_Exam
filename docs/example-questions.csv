@@ -1,0 +1,6 @@
+question,choice_a,choice_b,choice_c,choice_d,correct,difficulty,category,points,explanation
+Which HTTP method is used to update an existing resource?,POST,PUT,DELETE,GET,B,medium,HTTP,1,PUT is the standard method for full updates.
+What does the acronym SQL stand for?,Structured Query Language,Simple Query Language,Sequential Query Language,Standard Query Language,A,easy,SQL,1,SQL stands for Structured Query Language.
+Which data structure uses FIFO ordering?,Stack,Queue,Tree,Graph,B,medium,Data Structures,2,A queue processes elements first-in, first-out.
+What is the primary purpose of an index in a database?,To speed up lookups,To store backups,To encrypt data,To compress data,A,easy,Database,1,Indexes reduce the number of rows that must be examined.
+Which protocol is used to send email?,SMTP,HTTP,FTP,SSH,A,medium,Networking,2,SMTP (Simple Mail Transfer Protocol) is used to send mail.

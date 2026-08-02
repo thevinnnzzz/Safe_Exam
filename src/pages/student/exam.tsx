@@ -65,6 +65,7 @@ export function StudentExamPage() {
   const submittedRef = useRef(false)
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const progressTimerRef = useRef<number | null>(null)
+  const autoResumedRef = useRef(false)
 
   const proctor = useProctoring(se?.id ?? null, {
     enabled: phase === 'taking' || phase === 'locked',
@@ -125,15 +126,8 @@ export function StudentExamPage() {
     [se],
   )
 
-  const beginExam = async () => {
-    if (!exam) return
-    setPhase('starting')
-    try {
-      const attempt = await studentApi.startExam(exam.id)
-      if (attempt.status === 'submitted' || attempt.status === 'time_up') {
-        navigate(`/student/result/${attempt.id}`, { replace: true })
-        return
-      }
+  const restoreSession = useCallback(
+    async (attempt: StudentExam) => {
       const qs = await studentApi.fetchExamQuestions(attempt.id)
       if (qs.length === 0) throw new Error('This exam has no questions yet.')
       const saved = await studentApi.myAnswers(attempt.id)
@@ -166,6 +160,47 @@ export function StudentExamPage() {
 
       proctor.requestFullscreen()
       setPhase('taking')
+    },
+    [proctor],
+  )
+
+  // Auto-resume an in-progress attempt so a reload (e.g. a fullscreen exit on
+  // mobile) drops the student straight back into the exam instead of bouncing
+  // them to the instructions screen for a second "Begin exam" click.
+  useEffect(() => {
+    if (!exam) return
+    if (exam.status !== 'published') return
+    if (exam.start_time && new Date(exam.start_time).getTime() > Date.now()) return
+    if (exam.end_time && new Date(exam.end_time).getTime() < Date.now()) return
+    if (autoResumedRef.current) return
+    let cancelled = false
+    const resume = async () => {
+      try {
+        const attempt = await studentApi.currentAttempt(exam.id)
+        if (cancelled || !attempt || attempt.status !== 'in_progress') return
+        autoResumedRef.current = true
+        await restoreSession(attempt)
+        if (!cancelled) toast.info('Resumed your exam in progress.', { duration: 3000 })
+      } catch {
+        // No in-progress attempt (or an error) — stay on the instructions screen.
+      }
+    }
+    void resume()
+    return () => {
+      cancelled = true
+    }
+  }, [exam, restoreSession])
+
+  const beginExam = async () => {
+    if (!exam) return
+    setPhase('starting')
+    try {
+      const attempt = await studentApi.startExam(exam.id)
+      if (attempt.status === 'submitted' || attempt.status === 'time_up') {
+        navigate(`/student/result/${attempt.id}`, { replace: true })
+        return
+      }
+      await restoreSession(attempt)
       toast.success('Exam started. Your answers are saved automatically.', { duration: 3500 })
     } catch (err) {
       setPhase('instructions')
@@ -439,7 +474,7 @@ export function StudentExamPage() {
             </CardContent>
           </Card>
 
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <Button variant="outline" onClick={() => goTo(Math.max(0, currentIndex - 1))} disabled={currentIndex === 0 || phase === 'submitting'}>
               <ArrowLeft className="h-4 w-4" />
               Previous

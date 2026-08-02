@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { BadgePlus, CheckCircle2, Download, Loader2, Search, UserPlus, Users } from 'lucide-react'
+import { ArrowDownUp, BadgePlus, CheckCircle2, Download, Filter, KeyRound, Loader2, Pencil, Search, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { teacherApi } from '@/api/supabase-api'
 import { downloadCSV } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
@@ -16,6 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { ConfirmDialog } from '@/components/common/confirm-dialog'
+import type { UserProfile } from '@/lib/types'
 
 interface NewStudentForm {
   full_name: string
@@ -23,9 +25,10 @@ interface NewStudentForm {
   password: string
   email: string
   course_id: string
+  section: string
 }
 
-const emptyForm: NewStudentForm = { full_name: '', student_id: '', password: '', email: '', course_id: '' }
+const emptyForm: NewStudentForm = { full_name: '', student_id: '', password: '', email: '', course_id: '', section: '' }
 
 export function TeacherStudentsPage() {
   const queryClient = useQueryClient()
@@ -35,9 +38,25 @@ export function TeacherStudentsPage() {
   const [form, setForm] = useState<NewStudentForm>(emptyForm)
   const [bulkText, setBulkText] = useState('')
   const [bulkCourse, setBulkCourse] = useState('')
+  const [editStudent, setEditStudent] = useState<UserProfile | null>(null)
+  const [editCourse, setEditCourse] = useState('')
+  const [editSection, setEditSection] = useState('')
+  const [accessStudent, setAccessStudent] = useState<UserProfile | null>(null)
+  const [selectedExamIds, setSelectedExamIds] = useState<string[]>([])
+  const [deleteStudent, setDeleteStudent] = useState<UserProfile | null>(null)
+  const [courseFilter, setCourseFilter] = useState<string>('all')
+  const [sectionFilter, setSectionFilter] = useState<string>('all')
+  const [emailFilter, setEmailFilter] = useState<string>('all')
+  const [sortBy, setSortBy] = useState<string>('name_asc')
 
   const studentsQuery = useQuery({ queryKey: ['teacher-students'], queryFn: () => teacherApi.teacherStudents() })
   const coursesQuery = useQuery({ queryKey: ['teacher-courses'], queryFn: () => teacherApi.courses() })
+  const examsQuery = useQuery({ queryKey: ['teacher-exams'], queryFn: () => teacherApi.exams() })
+  const accessQuery = useQuery({
+    queryKey: ['student-exam-access', accessStudent?.id],
+    queryFn: () => teacherApi.studentExamAccess(accessStudent!.id),
+    enabled: !!accessStudent,
+  })
 
   const downloadTemplate = () => {
     downloadCSV('students-template.csv', [
@@ -56,6 +75,7 @@ export function TeacherStudentsPage() {
           password: form.password,
           email: form.email.trim() || null,
           course_id: form.course_id || null,
+          section: form.section.trim() || null,
         },
       ]),
     onSuccess: (results) => {
@@ -103,23 +123,125 @@ export function TeacherStudentsPage() {
     onError: () => toast.error('Could not import students.'),
   })
 
+  const editMutation = useMutation({
+    mutationFn: () =>
+      teacherApi.updateStudent(editStudent!.id, {
+        course_id: editCourse || null,
+        section: editSection.trim() || null,
+      }),
+    onSuccess: () => {
+      toast.success('Student updated')
+      queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+      setEditStudent(null)
+    },
+    onError: () => toast.error('Could not update the student.'),
+  })
+
+  const accessMutation = useMutation({
+    mutationFn: () => teacherApi.setStudentExamAccess(accessStudent!.id, selectedExamIds),
+    onSuccess: () => {
+      toast.success('Exam access updated')
+      queryClient.invalidateQueries({ queryKey: ['student-exam-access'] })
+      setAccessStudent(null)
+    },
+    onError: () => toast.error('Could not update exam access.'),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: () => teacherApi.deleteStudent(deleteStudent!.id),
+    onSuccess: () => {
+      toast.success(`Deleted ${deleteStudent?.full_name}`)
+      queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+      setDeleteStudent(null)
+    },
+    onError: () => toast.error('Could not delete the student.'),
+  })
+
+  const openEdit = (s: UserProfile) => {
+    setEditStudent(s)
+    setEditCourse(s.course_id ?? '')
+    setEditSection(s.section ?? '')
+  }
+
+  const openAccess = (s: UserProfile) => {
+    setAccessStudent(s)
+    setSelectedExamIds([])
+  }
+
+  useEffect(() => {
+    if (accessQuery.data) setSelectedExamIds(accessQuery.data)
+  }, [accessQuery.data])
+
+  const toggleExam = (examId: string) => {
+    setSelectedExamIds((prev) => (prev.includes(examId) ? prev.filter((id) => id !== examId) : [...prev, examId]))
+  }
+
+  const allStudents = studentsQuery.data ?? []
+
+  const sections = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of allStudents) {
+      if (s.section) set.add(s.section)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [allStudents])
+
   const students = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const list = studentsQuery.data ?? []
-    if (!q) return list
-    return list.filter(
-      (s) =>
-        s.full_name.toLowerCase().includes(q) ||
-        (s.student_id ?? '').toLowerCase().includes(q) ||
-        (s.email ?? '').toLowerCase().includes(q) ||
-        (s.course_name ?? '').toLowerCase().includes(q),
-    )
-  }, [studentsQuery.data, search])
+    const list = allStudents.filter((s) => {
+      if (courseFilter !== 'all' && s.course_id !== courseFilter) return false
+      if (sectionFilter !== 'all' && (s.section ?? '') !== sectionFilter) return false
+      if (emailFilter !== 'all') {
+        const hasEmail = !!s.email
+        if (emailFilter === 'has' && !hasEmail) return false
+        if (emailFilter === 'none' && hasEmail) return false
+      }
+      if (q) {
+        return (
+          s.full_name.toLowerCase().includes(q) ||
+          (s.student_id ?? '').toLowerCase().includes(q) ||
+          (s.email ?? '').toLowerCase().includes(q) ||
+          (s.course_name ?? '').toLowerCase().includes(q) ||
+          (s.section ?? '').toLowerCase().includes(q)
+        )
+      }
+      return true
+    })
+    return [...list].sort((a, b) => {
+      switch (sortBy) {
+        case 'name_desc':
+          return b.full_name.localeCompare(a.full_name)
+        case 'student_id_asc':
+          return (a.student_id ?? '').localeCompare(b.student_id ?? '', undefined, { numeric: true })
+        case 'student_id_desc':
+          return (b.student_id ?? '').localeCompare(a.student_id ?? '', undefined, { numeric: true })
+        case 'section_asc':
+          return (a.section ?? '').localeCompare(b.section ?? '') || a.full_name.localeCompare(b.full_name)
+        case 'section_desc':
+          return (b.section ?? '').localeCompare(a.section ?? '') || a.full_name.localeCompare(b.full_name)
+        case 'course_asc':
+          return (a.course_name ?? '').localeCompare(b.course_name ?? '') || a.full_name.localeCompare(b.full_name)
+        case 'course_desc':
+          return (b.course_name ?? '').localeCompare(a.course_name ?? '') || a.full_name.localeCompare(b.full_name)
+        default:
+          return a.full_name.localeCompare(b.full_name)
+      }
+    })
+  }, [allStudents, search, courseFilter, sectionFilter, emailFilter, sortBy])
 
-  if (studentsQuery.isLoading || coursesQuery.isLoading) return <PageLoader />
+  const hasFilters = courseFilter !== 'all' || sectionFilter !== 'all' || emailFilter !== 'all' || sortBy !== 'name_asc'
+
+  const clearFilters = () => {
+    setCourseFilter('all')
+    setSectionFilter('all')
+    setEmailFilter('all')
+    setSortBy('name_asc')
+  }
+
+  if (studentsQuery.isLoading || coursesQuery.isLoading || examsQuery.isLoading) return <PageLoader />
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <PageHeader title="Students" description="Manage student accounts for your courses.">
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setBulkOpen(true)}>
@@ -140,9 +262,75 @@ export function TeacherStudentsPage() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name, Student ID, email or course…"
+              placeholder="Search by name, Student ID, email, section or course…"
               className="pl-9"
             />
+          </div>
+
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <Select value={courseFilter} onValueChange={setCourseFilter}>
+              <SelectTrigger className="h-8 w-auto gap-1 text-xs">
+                <SelectValue placeholder="Course" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All courses</SelectItem>
+                {(coursesQuery.data ?? []).map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name} ({c.code})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={sectionFilter} onValueChange={setSectionFilter}>
+              <SelectTrigger className="h-8 w-auto gap-1 text-xs">
+                <SelectValue placeholder="Section" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sections</SelectItem>
+                {sections.map((sec) => (
+                  <SelectItem key={sec} value={sec}>
+                    {sec}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={emailFilter} onValueChange={setEmailFilter}>
+              <SelectTrigger className="h-8 w-auto gap-1 text-xs">
+                <SelectValue placeholder="Email" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Any email</SelectItem>
+                <SelectItem value="has">Has email</SelectItem>
+                <SelectItem value="none">No email</SelectItem>
+              </SelectContent>
+            </Select>
+            <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
+            <Select value={sortBy} onValueChange={setSortBy}>
+              <SelectTrigger className="h-8 w-auto gap-1 text-xs">
+                <ArrowDownUp className="h-3.5 w-3.5 text-muted-foreground" />
+                <SelectValue placeholder="Sort" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="name_asc">Name A–Z</SelectItem>
+                <SelectItem value="name_desc">Name Z–A</SelectItem>
+                <SelectItem value="student_id_asc">Student ID ↑</SelectItem>
+                <SelectItem value="student_id_desc">Student ID ↓</SelectItem>
+                <SelectItem value="section_asc">Section A–Z</SelectItem>
+                <SelectItem value="section_desc">Section Z–A</SelectItem>
+                <SelectItem value="course_asc">Course A–Z</SelectItem>
+                <SelectItem value="course_desc">Course Z–A</SelectItem>
+              </SelectContent>
+            </Select>
+            {hasFilters ? (
+              <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs" onClick={clearFilters}>
+                <X className="h-3.5 w-3.5" />
+                Clear
+              </Button>
+            ) : null}
+            <Badge variant="secondary" className="ml-auto">
+              {students.length} shown
+            </Badge>
           </div>
 
           {students.length === 0 ? (
@@ -169,8 +357,10 @@ export function TeacherStudentsPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Student ID</TableHead>
-                  <TableHead>Email</TableHead>
+                  <TableHead>Section</TableHead>
                   <TableHead>Course</TableHead>
+                  {/* <TableHead>Email</TableHead> */}
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -180,8 +370,25 @@ export function TeacherStudentsPage() {
                     <TableCell>
                       <Badge variant="secondary">{s.student_id ?? '—'}</Badge>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{s.email ?? '—'}</TableCell>
+                    <TableCell className="text-muted-foreground">{s.section ?? '—'}</TableCell>
                     <TableCell className="text-muted-foreground">{s.course_name ?? '—'}</TableCell>
+                    {/* <TableCell className="text-muted-foreground">{s.email ?? '—'}</TableCell> */}
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(s)} title="Edit course / section">
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="sr-only">Edit</span>
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => openAccess(s)} title="Manage exam access">
+                          <KeyRound className="h-3.5 w-3.5" />
+                          <span className="sr-only">Manage exams</span>
+                        </Button>
+                        <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" onClick={() => setDeleteStudent(s)} title="Delete student">
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span className="sr-only">Delete</span>
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -215,21 +422,27 @@ export function TeacherStudentsPage() {
               <Label htmlFor="email">Email (optional)</Label>
               <Input id="email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="student@example.com" />
             </div>
-            <div className="space-y-2">
-              <Label>Course (optional)</Label>
-              <Select value={form.course_id || 'none'} onValueChange={(v) => setForm({ ...form, course_id: v === 'none' ? '' : v })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a course" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No course</SelectItem>
-                  {(coursesQuery.data ?? []).map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name} ({c.code})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="section">Section (optional)</Label>
+                <Input id="section" value={form.section} onChange={(e) => setForm({ ...form, section: e.target.value })} placeholder="e.g. 1-A" />
+              </div>
+              <div className="space-y-2">
+                <Label>Course (optional)</Label>
+                <Select value={form.course_id || 'none'} onValueChange={(v) => setForm({ ...form, course_id: v === 'none' ? '' : v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a course" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No course</SelectItem>
+                    {(coursesQuery.data ?? []).map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name} ({c.code})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -302,6 +515,103 @@ export function TeacherStudentsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!editStudent} onOpenChange={(open) => !open && setEditStudent(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit student</DialogTitle>
+            <DialogDescription>Update the course and section for {editStudent?.full_name ?? 'this student'}.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit_section">Section</Label>
+              <Input id="edit_section" value={editSection} onChange={(e) => setEditSection(e.target.value)} placeholder="e.g. 1-A" />
+            </div>
+            <div className="space-y-2">
+              <Label>Course</Label>
+              <Select value={editCourse || 'none'} onValueChange={(v) => setEditCourse(v === 'none' ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a course" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No course</SelectItem>
+                  {(coursesQuery.data ?? []).map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name} ({c.code})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditStudent(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => editMutation.mutate()} disabled={editMutation.isPending}>
+              {editMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!accessStudent} onOpenChange={(open) => !open && setAccessStudent(null)}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Manage exam access</DialogTitle>
+            <DialogDescription>
+              Choose which exams {accessStudent?.full_name ?? 'this student'} ({accessStudent?.student_id ?? '…'}) is allowed to take. Unchecked exams are hidden from the student.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {(examsQuery.data ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No exams yet. Create an exam before assigning access.</p>
+            ) : (
+              (examsQuery.data ?? []).map((exam) => (
+                <label
+                  key={exam.id}
+                  className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 accent-primary"
+                    checked={selectedExamIds.includes(exam.id)}
+                    onChange={() => toggleExam(exam.id)}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{exam.title}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {exam.status}
+                      {exam.course_name ? ` · ${exam.course_name}` : ''}
+                    </span>
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccessStudent(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => accessMutation.mutate()} disabled={accessMutation.isPending}>
+              {accessMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save access
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={deleteStudent !== null}
+        onOpenChange={(open) => !open && setDeleteStudent(null)}
+        title="Delete this student?"
+        description={`This permanently removes ${deleteStudent?.full_name ?? 'this student'} (${deleteStudent?.student_id ?? '…'}) along with all their attempts, answers, risk history and exam assignments. This cannot be undone.`}
+        confirmLabel="Delete student"
+        destructive
+        onConfirm={() => deleteStudent && deleteMutation.mutate()}
+        loading={deleteMutation.isPending}
+      />
     </div>
   )
 }

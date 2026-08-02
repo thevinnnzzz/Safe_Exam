@@ -101,6 +101,7 @@ export function TeacherResultsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Student</TableHead>
+                  <TableHead className="text-center">Attempt</TableHead>
                   <TableHead>Score</TableHead>
                   <TableHead>Percentage</TableHead>
                   <TableHead>Time used</TableHead>
@@ -122,6 +123,9 @@ export function TeacherResultsPage() {
                       <TableCell>
                         <span className="font-medium">{record.student?.full_name ?? 'Student'}</span>
                         <p className="text-xs text-muted-foreground">{record.student?.student_id}</p>
+                      </TableCell>
+                      <TableCell className="text-center text-sm text-muted-foreground">
+                        {record.attempt_number ?? 1}
                       </TableCell>
                       <TableCell>
                         {record.score !== null ? (

@@ -1,25 +1,29 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from '@/hooks/use-auth'
 import { ThemeProvider } from '@/components/theme-provider'
 import { Toaster } from '@/components/ui/sonner'
 import { ProtectedRoute } from '@/components/common/protected-route'
+import { PageLoader } from '@/components/common/page-loader'
 import { TeacherLayout } from '@/components/layout/teacher-layout'
 import { StudentLayout } from '@/components/layout/student-layout'
-import { LoginPage } from '@/pages/login'
-import { StudentDashboardPage } from '@/pages/student/dashboard'
-import { StudentExamPage } from '@/pages/student/exam'
-import { StudentResultPage } from '@/pages/student/result'
-import { TeacherDashboardPage } from '@/pages/teacher/dashboard'
-import { TeacherExamsPage } from '@/pages/teacher/exams'
-import { ExamEditorPage } from '@/pages/teacher/exam-editor'
-import { TeacherBanksPage } from '@/pages/teacher/banks'
-import { BankDetailPage } from '@/pages/teacher/bank-detail'
-import { TeacherMonitorPage } from '@/pages/teacher/monitor'
-import { TeacherResultsPage } from '@/pages/teacher/results'
-import { TeacherResultDetailPage } from '@/pages/teacher/result-detail'
-import { TeacherStudentsPage } from '@/pages/teacher/students'
 import { useAuth } from '@/hooks/use-auth'
+
+const LoginPage = lazy(() => import('@/pages/login').then((m) => ({ default: m.LoginPage })))
+const StudentDashboardPage = lazy(() => import('@/pages/student/dashboard').then((m) => ({ default: m.StudentDashboardPage })))
+const StudentExamPage = lazy(() => import('@/pages/student/exam').then((m) => ({ default: m.StudentExamPage })))
+const StudentResultPage = lazy(() => import('@/pages/student/result').then((m) => ({ default: m.StudentResultPage })))
+const TeacherDashboardPage = lazy(() => import('@/pages/teacher/dashboard').then((m) => ({ default: m.TeacherDashboardPage })))
+const TeacherExamsPage = lazy(() => import('@/pages/teacher/exams').then((m) => ({ default: m.TeacherExamsPage })))
+const ExamEditorPage = lazy(() => import('@/pages/teacher/exam-editor').then((m) => ({ default: m.ExamEditorPage })))
+const TeacherBanksPage = lazy(() => import('@/pages/teacher/banks').then((m) => ({ default: m.TeacherBanksPage })))
+const BankDetailPage = lazy(() => import('@/pages/teacher/bank-detail').then((m) => ({ default: m.BankDetailPage })))
+const TeacherMonitorPage = lazy(() => import('@/pages/teacher/monitor').then((m) => ({ default: m.TeacherMonitorPage })))
+const TeacherResultsPage = lazy(() => import('@/pages/teacher/results').then((m) => ({ default: m.TeacherResultsPage })))
+const TeacherResultDetailPage = lazy(() => import('@/pages/teacher/result-detail').then((m) => ({ default: m.TeacherResultDetailPage })))
+const TeacherStudentsPage = lazy(() => import('@/pages/teacher/students').then((m) => ({ default: m.TeacherStudentsPage })))
+const TeacherCoursesPage = lazy(() => import('@/pages/teacher/courses').then((m) => ({ default: m.TeacherCoursesPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,45 +52,48 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <BrowserRouter>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/" element={<HomeRedirect />} />
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/" element={<HomeRedirect />} />
 
-              <Route
-                path="/student"
-                element={
-                  <ProtectedRoute role="student">
-                    <StudentLayout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<StudentDashboardPage />} />
-                <Route path="exam/:examId" element={<StudentExamPage />} />
-                <Route path="result/:studentExamId" element={<StudentResultPage />} />
-              </Route>
+                <Route
+                  path="/student"
+                  element={
+                    <ProtectedRoute role="student">
+                      <StudentLayout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route index element={<StudentDashboardPage />} />
+                  <Route path="exam/:examId" element={<StudentExamPage />} />
+                  <Route path="result/:studentExamId" element={<StudentResultPage />} />
+                </Route>
 
-              <Route
-                path="/teacher"
-                element={
-                  <ProtectedRoute role="teacher">
-                    <TeacherLayout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<TeacherDashboardPage />} />
-                <Route path="exams" element={<TeacherExamsPage />} />
-                <Route path="exams/new" element={<ExamEditorPage />} />
-                <Route path="exams/:examId" element={<ExamEditorPage />} />
-                <Route path="exams/:examId/monitor" element={<TeacherMonitorPage />} />
-                <Route path="exams/:examId/results" element={<TeacherResultsPage />} />
-                <Route path="exams/:examId/results/:studentExamId" element={<TeacherResultDetailPage />} />
-                <Route path="banks" element={<TeacherBanksPage />} />
-                <Route path="banks/:bankId" element={<BankDetailPage />} />
-                <Route path="students" element={<TeacherStudentsPage />} />
-              </Route>
+                <Route
+                  path="/teacher"
+                  element={
+                    <ProtectedRoute role="teacher">
+                      <TeacherLayout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route index element={<TeacherDashboardPage />} />
+                  <Route path="exams" element={<TeacherExamsPage />} />
+                  <Route path="exams/new" element={<ExamEditorPage />} />
+                  <Route path="exams/:examId" element={<ExamEditorPage />} />
+                  <Route path="exams/:examId/monitor" element={<TeacherMonitorPage />} />
+                  <Route path="exams/:examId/results" element={<TeacherResultsPage />} />
+                  <Route path="exams/:examId/results/:studentExamId" element={<TeacherResultDetailPage />} />
+                  <Route path="banks" element={<TeacherBanksPage />} />
+                  <Route path="banks/:bankId" element={<BankDetailPage />} />
+                  <Route path="students" element={<TeacherStudentsPage />} />
+                  <Route path="courses" element={<TeacherCoursesPage />} />
+                </Route>
 
-              <Route path="*" element={<NotFound />} />
-            </Routes>
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
           </BrowserRouter>
         </AuthProvider>
       </QueryClientProvider>

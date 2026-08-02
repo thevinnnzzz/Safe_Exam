@@ -16,6 +16,7 @@ export interface UserProfile {
   student_id?: string | null
   course_id?: string | null
   course_name?: string | null
+  section?: string | null
 }
 
 export interface Course {
@@ -85,6 +86,7 @@ export interface Exam {
   updated_at: string
   course_name?: string | null
   question_count?: number
+  assigned_count?: number
   total_points?: number
 }
 
@@ -100,6 +102,7 @@ export interface StudentExam {
   id: string
   exam_id: string
   student_user_id: string
+  attempt_number?: number
   status: StudentExamStatus
   started_at: string | null
   submitted_at: string | null

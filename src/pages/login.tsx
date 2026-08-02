@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { GraduationCap, KeyRound, Loader2, Lock, ShieldCheck, UserRound } from 'lucide-react'
+import { Eye, EyeOff, GraduationCap, KeyRound, Loader2, Lock, ShieldCheck, UserRound } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import { AuthError } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
@@ -28,6 +28,7 @@ export function LoginPage() {
   const location = useLocation()
   const [tab, setTab] = useState<Tab>('student')
   const [serverError, setServerError] = useState<string | null>(null)
+  const [showPassword, setShowPassword] = useState(false)
 
   const {
     register,
@@ -54,14 +55,26 @@ export function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-sky-50 via-white to-blue-50 p-4 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-sky-50 via-white to-blue-50 p-4 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-24 -top-24 h-80 w-80 animate-float-soft rounded-full bg-sky-300/30 blur-3xl dark:bg-sky-600/20" />
+        <div
+          className="absolute -right-20 top-1/4 h-72 w-72 animate-float-soft rounded-full bg-blue-300/30 blur-3xl dark:bg-blue-600/20"
+          style={{ animationDelay: '-6s' }}
+        />
+        <div
+          className="absolute -bottom-24 left-1/4 h-80 w-80 animate-float-soft rounded-full bg-indigo-200/30 blur-3xl dark:bg-indigo-600/20"
+          style={{ animationDelay: '-12s' }}
+        />
+      </div>
+
       <div className="absolute right-4 top-4">
         <ModeToggle />
       </div>
 
-      <div className="w-full max-w-md animate-fade-in">
+      <div className="relative w-full max-w-md animate-fade-in">
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30">
+          <div className="flex h-14 w-14 animate-float items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30">
             <GraduationCap className="h-7 w-7" />
           </div>
           <div>
@@ -70,7 +83,7 @@ export function LoginPage() {
           </div>
         </div>
 
-        <Card>
+        <Card className="animate-fade-in" style={{ animationDelay: '0.1s', animationFillMode: 'backwards' }}>
           <CardHeader>
             <CardTitle>Sign in</CardTitle>
             <CardDescription>
@@ -123,7 +136,26 @@ export function LoginPage() {
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input id="password" type="password" placeholder="••••••••" className="pl-9" autoComplete="current-password" {...register('password')} />
+                  <Input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    className="pl-9 pr-10"
+                    autoComplete="current-password"
+                    {...register('password')}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="group absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4 animate-fade-in" />
+                    ) : (
+                      <Eye className="h-4 w-4 animate-fade-in" />
+                    )}
+                  </button>
                 </div>
                 {errors.password ? <p className="text-xs text-destructive">{errors.password.message}</p> : null}
               </div>

@@ -16,6 +16,7 @@ import {
   Save,
   Search,
   Trash2,
+  Users,
   X,
 } from 'lucide-react'
 import { teacherApi } from '@/api/supabase-api'
@@ -23,16 +24,18 @@ import { PageHeader } from '@/components/common/page-header'
 import { PageLoader } from '@/components/common/page-loader'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { ExamStatusBadge } from '@/components/common/status-badge'
-import type { Exam } from '@/lib/types'
+import type { Exam, UserProfile } from '@/lib/types'
 
 const examSchema = z.object({
   title: z.string().min(3, 'Title is required.'),
@@ -81,8 +84,44 @@ export function ExamEditorPage() {
     auto_submit: true,
   })
   const [addDialog, setAddDialog] = useState(false)
+  const [assignedIds, setAssignedIds] = useState<string[]>([])
+  const [targetSearch, setTargetSearch] = useState('')
+  const [targetCourse, setTargetCourse] = useState('')
+  const [targetSection, setTargetSection] = useState('')
 
   const coursesQuery = useQuery({ queryKey: ['teacher-courses'], queryFn: () => teacherApi.courses() })
+
+  const studentsQuery = useQuery({ queryKey: ['teacher-students'], queryFn: () => teacherApi.teacherStudents() })
+
+  const assignedQuery = useQuery({
+    queryKey: ['teacher-exam-students', examId],
+    queryFn: () => teacherApi.examStudentIds(examId!),
+    enabled: editing,
+  })
+
+  const sections = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of studentsQuery.data ?? []) if (s.section) set.add(s.section)
+    return Array.from(set).sort()
+  }, [studentsQuery.data])
+
+  const filteredStudents = useMemo(() => {
+    const list = studentsQuery.data ?? []
+    const q = targetSearch.trim().toLowerCase()
+    return list.filter((s) => {
+      if (targetCourse && s.course_id !== targetCourse) return false
+      if (targetSection && s.section !== targetSection) return false
+      if (q) {
+        const hay = `${s.full_name} ${s.student_id ?? ''} ${s.email ?? ''}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }, [studentsQuery.data, targetSearch, targetCourse, targetSection])
+
+  const toggleAssign = (id: string) => {
+    setAssignedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
 
   const existingQuery = useQuery({
     queryKey: ['teacher-exam-detail', examId],
@@ -144,8 +183,12 @@ export function ExamEditorPage() {
     }
   }, [existingQuery.data, reset])
 
+  useEffect(() => {
+    if (assignedQuery.data) setAssignedIds(assignedQuery.data)
+  }, [assignedQuery.data])
+
   const createMutation = useMutation({
-    mutationFn: async ({ values, questionIds }: { values: ExamFormValues; questionIds: string[] }) => {
+    mutationFn: async ({ values, questionIds, studentIds }: { values: ExamFormValues; questionIds: string[]; studentIds: string[] }) => {
       const payload: Partial<Exam> = {
         title: values.title,
         description: values.description || null,
@@ -160,15 +203,18 @@ export function ExamEditorPage() {
       if (editing && examId) {
         await teacherApi.updateExam(examId, payload)
         await teacherApi.setExamQuestions(examId, questionIds, 1)
+        await teacherApi.setExamStudents(examId, studentIds)
         return examId
       }
       const created = await teacherApi.createExam(payload)
       await teacherApi.setExamQuestions(created.id, questionIds, 1)
+      await teacherApi.setExamStudents(created.id, studentIds)
       return created.id
     },
     onSuccess: (id) => {
       toast.success(editing ? 'Exam updated' : 'Exam created')
       queryClient.invalidateQueries({ queryKey: ['teacher-exams'] })
+      queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
       navigate(`/teacher/exams/${id}`)
     },
     onError: () => toast.error('Could not save the exam.'),
@@ -179,7 +225,7 @@ export function ExamEditorPage() {
       toast.error('Add at least one question to the exam.')
       return
     }
-    createMutation.mutate({ values, questionIds: selected.map((q) => q.question_id) })
+    createMutation.mutate({ values, questionIds: selected.map((q) => q.question_id), studentIds: assignedIds })
   }
 
   const toggleQuestion = (question: SelectedQuestion) => {
@@ -287,6 +333,108 @@ export function ExamEditorPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle className="text-base">Target students</CardTitle>
+              <CardDescription>Choose who can see and take this exam. Students not listed here won&apos;t see it.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Users className="h-4 w-4" />
+                  <span>
+                    <span className="font-medium text-foreground">{assignedIds.length}</span> assigned
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={filteredStudents.length === 0 || filteredStudents.every((s) => assignedIds.includes(s.id))}
+                    onClick={() =>
+                      setAssignedIds((prev) => Array.from(new Set([...prev, ...filteredStudents.map((s) => s.id)])))
+                    }
+                  >
+                    Add all
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={assignedIds.length === 0}
+                    onClick={() =>
+                      setAssignedIds((prev) => {
+                        const filtered = new Set(filteredStudents.map((s) => s.id))
+                        return prev.filter((id) => !filtered.has(id))
+                      })
+                    }
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                  <Input
+                    placeholder="Search students…"
+                    value={targetSearch}
+                    onChange={(e) => setTargetSearch(e.target.value)}
+                    className="h-9"
+                  />
+                  <Select value={targetCourse} onValueChange={(v) => setTargetCourse(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-40">
+                      <SelectValue placeholder="All courses" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All courses</SelectItem>
+                      {(coursesQuery.data ?? []).map((course) => (
+                        <SelectItem key={course.id} value={course.id}>
+                          {course.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={targetSection} onValueChange={(v) => setTargetSection(v === 'all' ? '' : v)}>
+                    <SelectTrigger className="h-9 w-40">
+                      <SelectValue placeholder="All sections" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All sections</SelectItem>
+                      {sections.map((section) => (
+                        <SelectItem key={section} value={section}>
+                          {section}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {studentsQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading students…</p>
+              ) : filteredStudents.length === 0 ? (
+                <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  No students match your filters.
+                </p>
+              ) : (
+                <ScrollArea className="h-64 rounded-lg border">
+                  <div className="space-y-1 p-2">
+                    {filteredStudents.map((student) => (
+                      <StudentRow
+                        key={student.id}
+                        student={student}
+                        checked={assignedIds.includes(student.id)}
+                        onToggle={() => toggleAssign(student.id)}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle className="text-base">Behaviour</CardTitle>
               <CardDescription>Randomization and post-exam visibility.</CardDescription>
             </CardHeader>
@@ -329,8 +477,8 @@ export function ExamEditorPage() {
           </Card>
         </div>
 
-        <div className="space-y-6">
-          <Card className="sticky top-20">
+        <div className="space-y-6 lg:sticky lg:top-20">
+          <Card className="flex flex-col overflow-hidden lg:max-h-[calc(100vh-12rem)]">
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div>
                 <CardTitle className="text-base">Exam questions</CardTitle>
@@ -341,7 +489,7 @@ export function ExamEditorPage() {
                 Add
               </Button>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent className="space-y-2 overflow-y-auto">
               {selected.length === 0 ? (
                 <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
                   No questions yet. Click <span className="font-medium">Add</span> to pick from your question banks.
@@ -395,6 +543,30 @@ export function ExamEditorPage() {
 
       <AddQuestionsDialog open={addDialog} onOpenChange={setAddDialog} selected={selected} onToggle={toggleQuestion} />
     </div>
+  )
+}
+
+function StudentRow({
+  student,
+  checked,
+  onToggle,
+}: {
+  student: UserProfile
+  checked: boolean
+  onToggle: () => void
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-3 rounded-md p-2 transition-colors hover:bg-muted">
+      <Checkbox checked={checked} onCheckedChange={onToggle} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium">{student.full_name}</p>
+        <p className="truncate text-xs text-muted-foreground">
+          {student.student_id ?? '—'}
+          {student.course_name ? ` · ${student.course_name}` : ''}
+          {student.section ? ` · ${student.section}` : ''}
+        </p>
+      </div>
+    </label>
   )
 }
 

@@ -53,7 +53,7 @@ export function TeacherBanksPage() {
   const banks = banksQuery.data ?? []
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <PageHeader title="Question banks" description="Reusable collections of multiple choice questions.">
         <Button onClick={() => setCreateOpen(true)}>
           <FolderPlus className="h-4 w-4" />

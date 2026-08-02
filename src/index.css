@@ -63,6 +63,52 @@
   }
 }
 
+/* Native date/time pickers. `display: block` overrides the Input component's
+   `flex` class, which would otherwise center the calendar icon in the field
+   with whitespace on both sides instead of pinning it to the right end. */
+input[type='date'],
+input[type='time'],
+input[type='datetime-local'] {
+  display: block;
+  color-scheme: light;
+}
+
+.dark input[type='date'],
+.dark input[type='time'],
+.dark input[type='datetime-local'] {
+  color-scheme: dark;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='time']::-webkit-calendar-picker-indicator,
+input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  margin-left: auto;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator:hover,
+input[type='time']::-webkit-calendar-picker-indicator:hover,
+input[type='datetime-local']::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Hide the browser's built-in password reveal / clear buttons so the custom
+   eye toggle is the only one rendered (MS Edge shows its own eye via
+   ::-ms-reveal, which would otherwise appear doubled next to ours). */
+input[type='password']::-ms-reveal,
+input[type='password']::-ms-clear,
+input[type='text']::-ms-clear {
+  display: none;
+}
+
+input::-webkit-credentials-auto-fill-button {
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
     width: 6px;

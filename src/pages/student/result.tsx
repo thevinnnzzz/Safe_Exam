@@ -38,6 +38,7 @@ interface ResultPayload {
   student_exam: {
     id: string
     status: string
+    attempt_number?: number
     score: number | null
     score_percent: number | null
     passed: boolean | null
@@ -94,6 +95,7 @@ export function StudentResultPage() {
             {showScore ? 'Exam submitted — here is your result' : 'Exam submitted successfully'}
           </h1>
           <p className="mt-1 text-sm opacity-90">
+            {student_exam.attempt_number && student_exam.attempt_number > 1 ? `Attempt ${student_exam.attempt_number} · ` : ''}
             Submitted {student_exam.submitted_at ? new Date(student_exam.submitted_at).toLocaleString() : '—'}
           </p>
         </div>

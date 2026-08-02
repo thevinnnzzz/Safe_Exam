@@ -1,4 +1,4 @@
-import { getSupabase } from '@/lib/supabase'
+import { getStoredUser, getSupabase } from '@/lib/supabase'
 import type {
   ActivityLog,
   Course,
@@ -40,22 +40,31 @@ export const apiProfile = {
 
 export const studentApi = {
   async availableExams(): Promise<Exam[]> {
+    const userId = getStoredUser()?.id
+    const { data: access, error: accessError } = await getSupabase()
+      .from('exam_access')
+      .select('exam_id')
+      .eq('student_user_id', userId ?? '')
+    if (accessError) throw accessError
+    const ids = (access ?? []).map((row) => row.exam_id)
+    if (ids.length === 0) return []
     const { data, error } = await getSupabase()
       .from('exams')
-      .select('*, course:courses(name)')
+      .select('id, title, description, course_id, status, start_time, end_time, duration_minutes, passing_score, course:courses(name)')
       .eq('status', 'published')
+      .in('id', ids)
       .order('created_at', { ascending: false })
     if (error) throw error
     return (data ?? []).map((row) => ({
       ...row,
-      course_name: row.course?.name ?? null,
+      course_name: (row.course as unknown as { name?: string } | null | undefined)?.name ?? null,
     })) as unknown as Exam[]
   },
 
   async myExamAttempts(): Promise<StudentExam[]> {
     const { data, error } = await getSupabase()
       .from('student_exams')
-      .select('*, exam:exams(*)')
+      .select('id, exam_id, student_user_id, attempt_number, status, started_at, submitted_at, time_used_seconds, score, score_percent, passed, risk_score, is_online, last_active_at, exam:exams(id, title)')
       .order('updated_at', { ascending: false })
     if (error) throw error
     return (data ?? []).map((row) => ({ ...row, exam: row.exam ?? undefined })) as unknown as StudentExam[]
@@ -63,6 +72,10 @@ export const studentApi = {
 
   async startExam(examId: string): Promise<StudentExam> {
     return rpc<StudentExam>('fn_start_exam', { p_exam_id: examId })
+  },
+
+  async currentAttempt(examId: string): Promise<StudentExam | null> {
+    return rpc<StudentExam | null>('fn_my_current_attempt', { p_exam_id: examId })
   },
 
   async fetchExamQuestions(studentExamId: string): Promise<ExamQuestionPublic[]> {
@@ -137,13 +150,34 @@ export const teacherApi = {
     return (data ?? []) as Course[]
   },
 
+  async createCourse(name: string, code: string): Promise<Course> {
+    const teacherId = getStoredUser()?.id
+    if (!teacherId) throw new Error('Not authenticated')
+    return single(
+      getSupabase()
+        .from('courses')
+        .insert({ name: name.trim(), code: code.trim(), teacher_id: teacherId })
+        .select()
+        .single(),
+    )
+  },
+
+  async deleteCourse(id: string) {
+    const { error } = await getSupabase().from('courses').delete().eq('id', id)
+    if (error) throw error
+  },
+
   async exams(): Promise<Exam[]> {
     const { data, error } = await getSupabase()
       .from('exams')
-      .select('*, course:courses(name)')
+      .select('id, title, description, course_id, status, start_time, end_time, duration_minutes, passing_score, assigned_count:exam_access(count), course:courses(name)')
       .order('created_at', { ascending: false })
     if (error) throw error
-    return (data ?? []).map((row) => ({ ...row, course_name: row.course?.name ?? null })) as unknown as Exam[]
+    return (data ?? []).map((row) => ({
+      ...row,
+      course_name: (row.course as unknown as { name?: string } | null | undefined)?.name ?? null,
+      assigned_count: Array.isArray(row.assigned_count) ? (row.assigned_count[0]?.count ?? 0) : 0,
+    })) as unknown as Exam[]
   },
 
   async exam(id: string): Promise<Exam> {
@@ -151,10 +185,12 @@ export const teacherApi = {
   },
 
   async createExam(exam: Partial<Exam>): Promise<Exam> {
+    const teacherId = getStoredUser()?.id
+    if (!teacherId) throw new Error('Not authenticated')
     return single(
       getSupabase()
         .from('exams')
-        .insert({ ...exam, status: exam.status ?? 'draft' })
+        .insert({ ...exam, teacher_id: teacherId, status: exam.status ?? 'draft' })
         .select()
         .single(),
     )
@@ -195,7 +231,9 @@ export const teacherApi = {
   },
 
   async createBank(name: string, description: string | null): Promise<QuestionBank> {
-    return single(getSupabase().from('question_bank').insert({ name, description }).select().single())
+    const teacherId = getStoredUser()?.id
+    if (!teacherId) throw new Error('Not authenticated')
+    return single(getSupabase().from('question_bank').insert({ name, description, teacher_id: teacherId }).select().single())
   },
 
   async deleteBank(id: string) {
@@ -227,7 +265,7 @@ export const teacherApi = {
   ) {
     const { data: question, error: qError } = await getSupabase()
       .from('questions')
-      .insert({ question_bank_id: bankId, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation })
+      .insert({ question_bank_id: bankId, teacher_id: getStoredUser()?.id, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation })
       .select()
       .single()
     if (qError) throw qError
@@ -284,6 +322,33 @@ export const teacherApi = {
     return (data ?? []).map((row) => ({ ...row, student: row.student ?? null })) as unknown as StudentExam[]
   },
 
+  async examAssignedStudents(examId: string): Promise<UserProfile[]> {
+    const { data, error } = await getSupabase()
+      .from('exam_access')
+      .select('student_user_id, users(id, full_name, student_id, students(course_id, section, courses(name)))')
+      .eq('exam_id', examId)
+    if (error) throw error
+    const result: UserProfile[] = []
+    for (const row of data ?? []) {
+      const user = Array.isArray(row.users) ? row.users[0] : (row.users as Record<string, unknown> | null)
+      if (!user) continue
+      const student = Array.isArray(user.students) ? user.students[0] : (user.students as Record<string, unknown> | null)
+      const course = student?.courses
+      const courseName = Array.isArray(course) ? course[0]?.name : (course as { name?: string } | null)?.name
+      result.push({
+        id: user.id as string,
+        role: 'student',
+        full_name: user.full_name as string,
+        email: null,
+        student_id: (user.student_id as string | null) ?? null,
+        course_id: (student?.course_id as string | null) ?? null,
+        course_name: courseName ?? null,
+        section: (student?.section as string | null) ?? null,
+      })
+    }
+    return result
+  },
+
   async examRiskScores(examId: string): Promise<RiskScore[]> {
     const { data, error } = await getSupabase().from('risk_scores').select('*').eq('exam_id', examId)
     if (error) throw error
@@ -311,12 +376,12 @@ export const teacherApi = {
   async teacherStudents(): Promise<UserProfile[]> {
     const { data, error } = await getSupabase()
       .from('users')
-      .select('id, full_name, student_id, email, students(course_id, courses(name))')
+      .select('id, full_name, student_id, email, students(course_id, section, courses(name))')
       .eq('role_id', '00000000-0000-0000-0000-000000000001')
       .order('full_name')
     if (error) throw error
     return (data ?? []).map((row) => {
-      const student = (Array.isArray(row.students) ? row.students[0] : row.students) as { course_id?: string | null; courses?: { name?: string }[] | { name?: string } | null } | undefined
+      const student = (Array.isArray(row.students) ? row.students[0] : row.students) as { course_id?: string | null; section?: string | null; courses?: { name?: string }[] | { name?: string } | null } | undefined
       const course = student?.courses
       const courseName = Array.isArray(course) ? course[0]?.name : course?.name
       return {
@@ -327,11 +392,59 @@ export const teacherApi = {
         student_id: row.student_id ?? null,
         course_id: student?.course_id ?? null,
         course_name: courseName ?? null,
+        section: student?.section ?? null,
       }
     }) as UserProfile[]
   },
 
-  async createStudents(rows: { full_name: string; student_id: string; email?: string | null; password: string; course_id?: string | null }[]) {
+  async updateStudent(studentUserId: string, patch: { course_id?: string | null; section?: string | null }) {
+    return rpc('fn_update_student', {
+      p_student_user_id: studentUserId,
+      p_course_id: patch.course_id ?? null,
+      p_section: patch.section ?? null,
+    })
+  },
+
+  async deleteStudent(studentUserId: string) {
+    return rpc('fn_delete_student', { p_student_user_id: studentUserId })
+  },
+
+  async studentExamAccess(studentUserId: string): Promise<string[]> {
+    const teacherId = getStoredUser()?.id
+    const { data, error } = await getSupabase()
+      .from('exam_access')
+      .select('exam_id')
+      .eq('student_user_id', studentUserId)
+    if (error) throw error
+    const all = (data ?? []).map((row) => row.exam_id)
+    if (!teacherId) return all
+    const { data: owned, error: ownErr } = await getSupabase().from('exams').select('id').eq('teacher_id', teacherId)
+    if (ownErr) throw ownErr
+    const ownedIds = new Set((owned ?? []).map((r) => r.id))
+    return all.filter((id) => ownedIds.has(id))
+  },
+
+  async setStudentExamAccess(studentUserId: string, examIds: string[]) {
+    return rpc('fn_set_student_exam_access', {
+      p_student_user_id: studentUserId,
+      p_exam_ids: examIds,
+    })
+  },
+
+  async examStudentIds(examId: string): Promise<string[]> {
+    const { data, error } = await getSupabase().from('exam_access').select('student_user_id').eq('exam_id', examId)
+    if (error) throw error
+    return (data ?? []).map((row) => row.student_user_id)
+  },
+
+  async setExamStudents(examId: string, studentUserIds: string[]) {
+    return rpc('fn_set_exam_access', {
+      p_exam_id: examId,
+      p_student_user_ids: studentUserIds,
+    })
+  },
+
+  async createStudents(rows: { full_name: string; student_id: string; email?: string | null; password: string; course_id?: string | null; section?: string | null }[]) {
     return rpc<{ student_id: string; full_name: string; ok: boolean; error?: string }[]>('fn_create_students', {
       p_students: rows.map((r) => ({
         full_name: r.full_name,
@@ -339,6 +452,7 @@ export const teacherApi = {
         email: r.email ?? null,
         password: r.password,
         course_id: r.course_id ?? null,
+        section: r.section ?? null,
       })),
     })
   },

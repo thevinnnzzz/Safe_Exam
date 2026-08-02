@@ -47,10 +47,10 @@ export function TeacherDashboardPage() {
     queryFn: async () => {
       const { data, error } = await getSupabase()
         .from('student_exams')
-        .select('*, exam:exams(id, title)')
+        .select('id, exam_id, status, is_online, risk_score, score_percent, submitted_at, time_used_seconds, last_active_at, exam:exams(id, title)')
         .order('last_active_at', { ascending: false })
       if (error) throw error
-      return (data ?? []) as { id: string; exam_id: string; status: string; is_online: boolean; risk_score: number; score_percent: number | null; submitted_at: string | null; time_used_seconds: number; last_active_at: string | null; exam: { id: string; title: string } | null }[]
+      return (data ?? []) as unknown as { id: string; exam_id: string; status: string; is_online: boolean; risk_score: number; score_percent: number | null; submitted_at: string | null; time_used_seconds: number; last_active_at: string | null; exam: { id: string; title: string } | null }[]
     },
   })
 
@@ -68,11 +68,11 @@ export function TeacherDashboardPage() {
     queryFn: async () => {
       const { data, error } = await getSupabase()
         .from('activity_logs')
-        .select('*, exam:exams(id, title), student:users(full_name, student_id)')
+        .select('id, exam_id, event_type, risk_points, created_at, exam:exams(id, title), student:users(full_name, student_id)')
         .order('created_at', { ascending: false })
         .limit(500)
       if (error) throw error
-      return (data ?? []) as (ActivityLog & { exam: { id: string; title: string } | null; student: { full_name: string; student_id: string } | null })[]
+      return (data ?? []) as unknown as (ActivityLog & { exam: { id: string; title: string } | null; student: { full_name: string; student_id: string } | null })[]
     },
   })
 

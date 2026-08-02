@@ -306,7 +306,12 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
 
   const requestFullscreen = useCallback(() => {
     if (document.fullscreenElement) return
-    document.documentElement.requestFullscreen?.().catch(() => {
+    const request = document.documentElement.requestFullscreen?.bind(document.documentElement)
+    if (typeof request !== 'function') {
+      record('warning', { message: 'Fullscreen API unavailable' })
+      return
+    }
+    request().catch(() => {
       record('warning', { message: 'Fullscreen request blocked' })
     })
   }, [record])

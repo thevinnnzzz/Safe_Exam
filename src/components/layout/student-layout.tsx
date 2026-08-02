@@ -1,19 +1,13 @@
-import { Outlet, useNavigate } from 'react-router-dom'
-import { GraduationCap, LogOut } from 'lucide-react'
+import { Outlet } from 'react-router-dom'
+import { GraduationCap } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
 import { ModeToggle } from '@/components/common/mode-toggle'
+import { LogoutButton } from '@/components/common/logout-button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
 import { initials } from '@/lib/utils'
 
 export function StudentLayout() {
-  const { user, logout } = useAuth()
-  const navigate = useNavigate()
-
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
-  }
+  const { user } = useAuth()
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/30">
@@ -38,9 +32,7 @@ export function StudentLayout() {
             </div>
           </div>
           <ModeToggle />
-          <Button variant="ghost" size="icon" onClick={handleLogout} aria-label="Log out">
-            <LogOut className="h-4 w-4" />
-          </Button>
+          <LogoutButton size="icon" iconOnly aria-label="Log out" />
         </div>
       </header>
       <main className="flex-1 p-4 lg:p-8">

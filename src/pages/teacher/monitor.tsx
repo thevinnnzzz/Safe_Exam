@@ -21,7 +21,8 @@ import { StatCard } from '@/components/common/stat-card'
 import { RiskBadge } from '@/components/common/risk-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Progress } from '@/components/ui/progress'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { ActivityLog } from '@/lib/types'
 
@@ -52,17 +53,24 @@ export function TeacherMonitorPage() {
     refetchInterval: POLL_MS,
   })
 
+  const assignedQuery = useQuery({
+    queryKey: ['teacher-monitor-assigned', examId],
+    queryFn: () => teacherApi.examAssignedStudents(examId!),
+    enabled: !!examId,
+    staleTime: 60_000,
+  })
+
   const activityQuery = useQuery({
     queryKey: ['teacher-monitor-activity', examId],
     queryFn: async () => {
       const { data, error } = await getSupabase()
         .from('activity_logs')
-        .select('*, student:users(full_name, student_id)')
+        .select('id, exam_id, event_type, risk_points, created_at, student:users(full_name, student_id)')
         .eq('exam_id', examId!)
         .order('created_at', { ascending: false })
         .limit(30)
       if (error) throw error
-      return (data ?? []) as (ActivityLog & { student: { full_name: string; student_id: string } | null })[]
+      return (data ?? []) as unknown as (ActivityLog & { student: { full_name: string; student_id: string } | null })[]
     },
     enabled: !!examId,
     refetchInterval: POLL_MS,
@@ -90,6 +98,17 @@ export function TeacherMonitorPage() {
     [questionsQuery.data],
   )
 
+  const latestByStudent = useMemo(() => {
+    const map = new Map<string, (typeof records)[number]>()
+    for (const r of records) {
+      const existing = map.get(r.student_user_id)
+      if (!existing || (r.started_at ?? '').localeCompare(existing.started_at ?? '') >= 0) {
+        map.set(r.student_user_id, r)
+      }
+    }
+    return [...map.values()]
+  }, [records])
+
   if (examQuery.isLoading) return <PageLoader />
   if (examQuery.isError || !examQuery.data) {
     return (
@@ -108,10 +127,15 @@ export function TeacherMonitorPage() {
   const isRecentlyActive = (r: { is_online: boolean; last_active_at: string | null }) =>
     r.is_online && !!r.last_active_at && now - new Date(r.last_active_at).getTime() < ONLINE_WINDOW_MS
 
-  const online = records.filter((r) => r.status === 'in_progress' && isRecentlyActive(r))
-  const inProgress = records.filter((r) => r.status === 'in_progress')
-  const finished = records.filter((r) => r.status === 'submitted' || r.status === 'time_up')
-  const suspicious = records.filter((r) => r.risk_score >= 40)
+  const online = latestByStudent.filter((r) => r.status === 'in_progress' && isRecentlyActive(r))
+  const inProgress = latestByStudent.filter((r) => r.status === 'in_progress')
+  const finished = latestByStudent.filter((r) => r.status === 'submitted' || r.status === 'time_up')
+  const suspicious = latestByStudent.filter((r) => r.risk_score >= 40)
+
+  const assigned = assignedQuery.data ?? []
+  const attendedIds = new Set(records.map((r) => r.student_user_id))
+  const attended = assigned.filter((s) => attendedIds.has(s.id))
+  const notAttended = assigned.filter((s) => !attendedIds.has(s.id))
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -134,6 +158,49 @@ export function TeacherMonitorPage() {
         <StatCard title="Suspicious" value={suspicious.length} icon={ShieldAlert} hint="risk ≥ 40" iconClassName="bg-rose-500/10 text-rose-600" />
       </div>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold">Attendance</CardTitle>
+          <CardDescription>
+            {attended.length} of {assigned.length} assigned students have started this exam.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Progress value={assigned.length === 0 ? 0 : Math.round((attended.length / assigned.length) * 100)} />
+          {notAttended.length === 0 ? (
+            <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+              All assigned students have started the exam.
+            </p>
+          ) : (
+            <div>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">
+                Still not attending ({notAttended.length})
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {notAttended.map((student) => (
+                  <div key={student.id} className="flex items-center gap-2 rounded-lg border p-2">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground">
+                      {student.full_name
+                        .split(' ')
+                        .map((p) => p[0])
+                        .slice(0, 2)
+                        .join('')}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{student.full_name}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {student.student_id ?? '—'}
+                        {student.section ? ` · ${student.section}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
@@ -144,7 +211,7 @@ export function TeacherMonitorPage() {
             </span>
           </CardHeader>
           <CardContent className="p-0">
-            {records.length === 0 ? (
+            {latestByStudent.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">No students have started this exam yet.</p>
             ) : (
               <Table>
@@ -159,7 +226,7 @@ export function TeacherMonitorPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {records.map((record) => {
+                  {latestByStudent.map((record) => {
                     const order = (record.question_order as string[] | null) ?? []
                     const currentQid = order[record.current_question_index]
                     const currentText = questionMap.get(currentQid) ?? '—'

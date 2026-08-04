@@ -14,6 +14,7 @@ This directory contains the full technical documentation for the **Safe Exam** o
 | [security-model.md](security-model.md) | RLS, SECURITY DEFINER, column-level revokes, invariants |
 | [api-reference.md](api-reference.md) | All RPC functions + typed client API |
 | [deployment.md](deployment.md) | Setup, env vars, deployment to Supabase + Netlify |
+| [scalability.md](scalability.md) | Capacity targets, bottlenecks, optimization roadmap for 1k–10k students |
 | [faq.md](faq.md) | Common questions and operational notes |
 
 ## Quick facts

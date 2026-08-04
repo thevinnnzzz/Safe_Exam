@@ -108,8 +108,8 @@ export function TeacherLayout() {
                   <p className="truncate text-sm font-medium">{user?.full_name}</p>
                   <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
                 </div>
+                <ModeToggle />
               </div>
-              <LogoutButton size="sm" className="mt-1 w-full justify-start text-muted-foreground" onOpen={closeMobile} />
             </div>
           </aside>
         </div>
@@ -124,13 +124,9 @@ export function TeacherLayout() {
             <span className="font-semibold">Safe Exam</span>
           </div>
           <div className="flex items-center gap-2 lg:hidden">
-            <ModeToggle />
             <LogoutButton size="icon" iconOnly aria-label="Log out" />
           </div>
           <p className="hidden text-sm text-muted-foreground lg:block">Teacher workspace</p>
-          <div className="hidden items-center gap-2 lg:flex">
-            <ModeToggle />
-          </div>
         </header>
         <main className="flex-1 p-4 lg:p-8">
           <Outlet />

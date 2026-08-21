@@ -94,7 +94,7 @@ export function BankDetailPage() {
         </Button>
         <Button variant="outline" onClick={() => setImportOpen(true)}>
           <FileUp className="h-4 w-4" />
-          Import CSV
+          Import Questions
         </Button>
         <Button onClick={openCreate}>
           <Plus className="h-4 w-4" />
@@ -111,7 +111,7 @@ export function BankDetailPage() {
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setImportOpen(true)}>
                 <FileUp className="h-4 w-4" />
-                Import CSV
+                Import Questions
               </Button>
               <Button onClick={openCreate}>
                 <Plus className="h-4 w-4" />

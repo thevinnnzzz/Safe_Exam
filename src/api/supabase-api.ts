@@ -74,6 +74,19 @@ export const studentApi = {
     return rpc<StudentExam>('fn_start_exam', { p_exam_id: examId })
   },
 
+  /** Single-session heartbeat: true while this device still owns the login. */
+  async sessionStatus(): Promise<{ valid: boolean; reason?: string }> {
+    try {
+      const data = await rpc<{ valid: boolean; reason?: string }>('fn_my_session_status', {})
+      if (data && typeof data.valid === 'boolean') return data
+      return { valid: true }
+    } catch {
+      // Backend predates the single-session migration (or a network blip):
+      // never lock the student out on an unknown error.
+      return { valid: true }
+    }
+  },
+
   async currentAttempt(examId: string): Promise<StudentExam | null> {
     return rpc<StudentExam | null>('fn_my_current_attempt', { p_exam_id: examId })
   },

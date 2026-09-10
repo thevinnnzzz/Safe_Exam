@@ -59,10 +59,11 @@ Deno.serve(async (req) => {
     if (!jwtSecret) return json({ message: 'Server misconfiguration: JWT secret missing.' }, 500)
 
     const body = await req.json().catch(() => ({}))
-    const { identifier, password, mode } = body as {
+    const { identifier, password, mode, device_id } = body as {
       identifier?: string
       password?: string
       mode?: string
+      device_id?: string
     }
 
     if (!identifier || !password || !mode) {
@@ -98,6 +99,10 @@ Deno.serve(async (req) => {
     if (!valid) return json({ message: 'Invalid credentials.' }, 401)
 
     const now = Math.floor(Date.now() / 1000)
+    // Unique id for THIS login. Stored server-side (user_sessions) for
+    // students so that a newer login invalidates every older device
+    // (1 account = 1 device). Verified on each request via fn_session_valid().
+    const sessionJti = crypto.randomUUID()
     const claims = {
       sub: user.id,
       role: 'authenticated',
@@ -105,11 +110,34 @@ Deno.serve(async (req) => {
       full_name: user.full_name,
       email: user.email ?? undefined,
       student_id: user.student_id ?? undefined,
+      jti: sessionJti,
       iat: now,
       exp: now + 60 * 60 * 12, // 12h session
     }
 
     const token = await signJwt(claims)
+
+    // Claim the single active session for students. The upsert overwrites any
+    // previous row, instantly invalidating older devices. Wrapped defensively:
+    // if the user_sessions table does not exist yet (migration not applied),
+    // login must keep working exactly as before.
+    if (role === 'student') {
+      try {
+        await supabase.from('user_sessions').upsert(
+          {
+            user_id: user.id,
+            session_jti: sessionJti,
+            device_id: typeof device_id === 'string' ? device_id.slice(0, 128) : null,
+            created_at: new Date().toISOString(),
+            last_seen_at: new Date().toISOString(),
+            expires_at: new Date((now + 60 * 60 * 12) * 1000).toISOString(),
+          },
+          { onConflict: 'user_id' },
+        )
+      } catch (sessionErr) {
+        console.error('auth-login: could not claim single session, continuing login', sessionErr)
+      }
+    }
 
     return json(
       {

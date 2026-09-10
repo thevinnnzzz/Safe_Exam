@@ -23,7 +23,7 @@ type LoginForm = z.infer<typeof loginSchema>
 type Tab = 'student' | 'teacher'
 
 export function LoginPage() {
-  const { user, login } = useAuth()
+  const { user, login, takeover, clearTakeover } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [tab, setTab] = useState<Tab>('student')
@@ -46,6 +46,7 @@ export function LoginPage() {
 
   const onSubmit = async (values: LoginForm) => {
     setServerError(null)
+    clearTakeover()
     try {
       const u = await login({ identifier: values.identifier.trim(), password: values.password, mode: tab })
       navigate(u.role === 'teacher' ? from?.startsWith('/teacher') ? from : '/teacher' : '/student', { replace: true })
@@ -160,6 +161,13 @@ export function LoginPage() {
                 {errors.password ? <p className="text-xs text-destructive">{errors.password.message}</p> : null}
               </div>
 
+              {takeover ? (
+                <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                  <ShieldCheck className="h-4 w-4 shrink-0" />
+                  {takeover}
+                </div>
+              ) : null}
+
               {serverError ? (
                 <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                   <KeyRound className="h-4 w-4 shrink-0" />
@@ -172,18 +180,6 @@ export function LoginPage() {
                 {isSubmitting ? 'Signing in…' : 'Sign in'}
               </Button>
             </form>
-
-            <div className="mt-5 rounded-lg bg-muted/60 px-3 py-2.5 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Demo accounts</p>
-              <p className="mt-1">
-                Teacher: <code className="rounded bg-background px-1">teacher@example.com</code> /{' '}
-                <code className="rounded bg-background px-1">teacher123</code>
-              </p>
-              <p className="mt-0.5">
-                Student: <code className="rounded bg-background px-1">STU-2026-001</code> /{' '}
-                <code className="rounded bg-background px-1">student123</code>
-              </p>
-            </div>
           </CardContent>
         </Card>
       </div>

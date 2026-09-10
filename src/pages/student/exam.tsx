@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import { studentApi } from '@/api/supabase-api'
 import { useProctoring, IDLE_TIMEOUT_MS } from '@/hooks/use-proctoring'
+import { useAuth } from '@/hooks/use-auth'
+import { SESSION_TAKEN_MESSAGE, isSessionTakenError } from '@/lib/auth'
 import type { ExamQuestionPublic, StudentExam } from '@/lib/types'
 import { countWords } from '@/lib/types'
 import { EVENT_LABELS } from '@/lib/risk'
@@ -40,6 +42,14 @@ const violationEvents = new Set(['fullscreen_exit', 'copy_attempt', 'paste_attem
 export function StudentExamPage() {
   const { examId } = useParams<{ examId: string }>()
   const navigate = useNavigate()
+  const { logout } = useAuth()
+
+  // If another device claims this account mid-exam, sign out here immediately.
+  const handleTakeover = useCallback(() => {
+    logout()
+    toast.error(SESSION_TAKEN_MESSAGE, { duration: 6000 })
+    navigate('/login', { replace: true })
+  }, [logout, navigate])
 
   const examQuery = useQuery({
     queryKey: ['student-exam', examId],
@@ -206,6 +216,10 @@ export function StudentExamPage() {
       await restoreSession(attempt)
       toast.success('Exam started. Your answers are saved automatically.', { duration: 3500 })
     } catch (err) {
+      if (isSessionTakenError(err)) {
+        handleTakeover()
+        return
+      }
       setPhase('instructions')
       toast.error(err instanceof Error ? err.message : 'Could not start the exam.')
     }
@@ -229,12 +243,16 @@ export function StudentExamPage() {
       await proctor.flush()
       await studentApi.updateProgress(se.id, { answers: answersRef.current, is_online: false }).catch(() => {})
       navigate(`/student/result/${result.id}`, { replace: true })
-    } catch {
+    } catch (err) {
+      if (isSessionTakenError(err)) {
+        handleTakeover()
+        return
+      }
       submittedRef.current = false
       setPhase('taking')
       toast.error('Submission failed. Please try again.')
     }
-  }, [se, exam, proctor, navigate])
+  }, [se, exam, proctor, navigate, handleTakeover])
 
   const handleTimeUp = useCallback(() => {
     if (submittedRef.current || !exam) return

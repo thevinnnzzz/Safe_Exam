@@ -12,6 +12,27 @@ if (!url || !anonKey) {
 }
 
 const SESSION_KEY = 'safe_exam.session'
+const DEVICE_KEY = 'safe_exam.device_id'
+
+/**
+ * Stable per-browser device id used for single-session tracking.
+ * Tabs on the same browser share localStorage, so they correctly count as
+ * ONE device. Never cleared on logout — it identifies the device, not the login.
+ */
+export function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY)
+    if (!id) {
+      id = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
+      localStorage.setItem(DEVICE_KEY, id)
+    }
+    return id
+  } catch {
+    return 'unknown-device'
+  }
+}
 
 export interface SessionPayload {
   token: string

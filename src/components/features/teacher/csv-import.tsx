@@ -135,13 +135,24 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
     questionNumber += 1
     const label = `Question ${questionNumber}`
 
+    // Detect the question type upfront so `Type: essay` works anywhere inside
+    // the block (before or after choices). Essay blocks must not contain
+    // A./B./C. choice lines.
+    let qtype: 'multiple_choice' | 'essay' = 'multiple_choice'
+    for (const line of lines) {
+      const metaMatch = line.match(AIKEN_META_RE)
+      if (metaMatch && metaMatch[1].toLowerCase() === 'type') {
+        qtype = normalizeType(metaMatch[2].trim())
+        break
+      }
+    }
+
     const questionLines: string[] = []
     const choices: { content: string; is_correct: boolean }[] = []
     let explanation: string | null = null
     let difficulty: string | undefined
     let category: string | null = null
     let points: number | undefined
-    let qtype: 'multiple_choice' | 'essay' = 'multiple_choice'
     let modelAnswer: string | null = null
     let minWords = 0
     let maxWords: number | null = null
@@ -151,6 +162,10 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
 
     for (const line of lines) {
       const choiceMatch = line.match(AIKEN_CHOICE_RE)
+      if (choiceMatch && qtype === 'essay') {
+        errors.push(`${label}: essay questions must not have answer choices — remove the "A./B./…" lines or change "Type:" to multiple_choice.`)
+        return
+      }
       if (choiceMatch && qtype !== 'essay') {
         const letterIndex = choiceMatch[2].toUpperCase().charCodeAt(0) - 65
         if (letterIndex !== expectedLetterIndex) {
@@ -263,22 +278,28 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
         '# ==================================================================',
         '# HOW TO USE',
         '#   1. Each question is a block of lines; separate questions with a',
-        '#      blank line.',
+        '#      blank line. MCQ and essay questions can be mixed in one file.',
         '#   2. The first line of each block is the question text.',
-        '#   3. Below it, list the answer choices on their own lines, labeled',
-        '#      A. B. C. D. (up to F is allowed).',
+        '#   3. MULTIPLE CHOICE: below it, list the answer choices on their own',
+        '#      lines, labeled A. B. C. D. (up to F is allowed).',
         '#   4. Put * in front of the letter of the CORRECT choice.',
         '#      Exactly one choice per question must be marked.',
-        '#   5. Optional lines (anywhere inside the block):',
+        '#   5. ESSAY: instead of choices, put "Type: essay" on its own line',
+        '#      (anywhere inside the block). No A./B./C. lines allowed.',
+        '#   6. Optional lines (anywhere inside the block):',
         '#        Explanation: <text shown to students after submission>',
         '#        Category:    <free text>',
         '#        Difficulty:  easy | medium | hard   (default: medium)',
         '#        Points:      <number>                (default: 1)',
-        '#   6. Lines starting with # are comments and are ignored on import.',
+        '#        Type:        multiple_choice | essay (default: multiple_choice)',
+        '#        Model answer: <reference answer, essay only, teachers only>',
+        '#        Min words:   <number, essay only>   (default: 0 = no minimum)',
+        '#        Max words:   <number, essay only>   (default: no maximum)',
+        '#   7. Lines starting with # are comments and are ignored on import.',
         '#      You can keep or delete this header — it will not be imported.',
         '#',
         '# Prefer a spreadsheet? Import a .csv instead with columns:',
-        '#   question,choice_a,choice_b,choice_c,choice_d,correct,difficulty,category,points,explanation',
+        '#   question,type,choice_a,choice_b,choice_c,choice_d,correct,difficulty,category,points,explanation,model_answer,min_words,max_words',
         '# ==================================================================',
         '',
         'What is the capital of France?',
@@ -324,6 +345,23 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
         'Category: Geography',
         'Difficulty: hard',
         'Points: 3',
+        '',
+        'Explain the causes of World War I.',
+        'Type: essay',
+        'Category: History',
+        'Difficulty: medium',
+        'Points: 10',
+        'Min words: 100',
+        'Max words: 500',
+        'Model answer: Militarism, alliances, imperialism, and nationalism.',
+        'Explanation: Look for the four MAIN causes with examples.',
+        '',
+        'Do you agree that social media does more harm than good? Justify your answer.',
+        'Type: essay',
+        'Category: English',
+        'Difficulty: easy',
+        'Points: 5',
+        'Min words: 50',
       ].join('\n'),
     )
   }

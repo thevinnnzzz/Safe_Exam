@@ -91,6 +91,10 @@ export function StudentExamPage() {
     },
   })
 
+  // Whether this browser can run the exam in fullscreen. iPhones and other
+  // browsers without the Fullscreen API cannot — starting is blocked there.
+  const fullscreenSupported = proctor.fullscreenSupported
+
   const seRef = useRef(se)
   seRef.current = se
   const proctorRef = useRef(proctor)
@@ -180,8 +184,11 @@ export function StudentExamPage() {
   // Auto-resume an in-progress attempt so a reload (e.g. a fullscreen exit on
   // mobile) drops the student straight back into the exam instead of bouncing
   // them to the instructions screen for a second "Begin exam" click.
+  // Skipped on browsers without fullscreen support: starting is blocked there,
+  // so resuming silently would bypass the device gate.
   useEffect(() => {
     if (!exam) return
+    if (!fullscreenSupported) return
     if (exam.status !== 'published') return
     if (exam.start_time && new Date(exam.start_time).getTime() > Date.now()) return
     if (exam.end_time && new Date(exam.end_time).getTime() < Date.now()) return
@@ -202,10 +209,16 @@ export function StudentExamPage() {
     return () => {
       cancelled = true
     }
-  }, [exam, restoreSession])
+  }, [exam, fullscreenSupported, restoreSession])
 
   const beginExam = async () => {
     if (!exam) return
+    // Defense in depth: the Begin button is hidden on unsupported browsers,
+    // but never start the attempt even if this is reached some other way.
+    if (!fullscreenSupported) {
+      toast.error('This device or browser does not support fullscreen exams.')
+      return
+    }
     setPhase('starting')
     try {
       const attempt = await studentApi.startExam(exam.id)
@@ -458,10 +471,28 @@ export function StudentExamPage() {
               </div>
             </div>
 
-            <Button size="lg" className="w-full" onClick={beginExam} disabled={phase === 'starting'}>
-              {phase === 'starting' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {phase === 'starting' ? 'Starting exam…' : 'Begin exam'}
-            </Button>
+            {!fullscreenSupported ? (
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm">
+                <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                <div>
+                  <p className="font-semibold">This device cannot start the exam</p>
+                  <p className="mt-1 text-muted-foreground">
+                    This browser does not support fullscreen mode (e.g. iPhones and some in-app browsers), which this
+                    exam requires to prevent tab switching. Please sign in on an Android device with Chrome, or on a
+                    desktop browser, and start the exam there.
+                  </p>
+                  <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate('/student')}>
+                    <ArrowLeft className="h-4 w-4" />
+                    Back to dashboard
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button size="lg" className="w-full" onClick={beginExam} disabled={phase === 'starting'}>
+                {phase === 'starting' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {phase === 'starting' ? 'Starting exam…' : 'Begin exam'}
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -481,6 +512,19 @@ export function StudentExamPage() {
 
   return (
     <div className="mx-auto max-w-6xl animate-fade-in">
+      {fullscreenSupported && !proctor.isFullscreen && phase === 'taking' ? (
+        <div className="mb-4 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:bg-amber-500/10 dark:text-amber-300">
+          <p className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-medium">You left fullscreen.</span> This was logged — tap the button to return.
+            </span>
+          </p>
+          <Button size="sm" onClick={() => proctor.requestFullscreen()}>
+            Re-enter fullscreen
+          </Button>
+        </div>
+      ) : null}
       <div className="mb-4 flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <p className="truncate font-semibold">{exam.title}</p>

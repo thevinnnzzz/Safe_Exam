@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import Papa from 'papaparse'
 import { toast } from 'sonner'
-import { ArrowDownUp, BadgePlus, CheckCircle2, Download, Filter, KeyRound, Loader2, Pencil, Search, Trash2, UserPlus, Users, X } from 'lucide-react'
+import { ArrowDownUp, BadgePlus, CheckCircle2, Download, Filter, KeyRound, Loader2, Pencil, Search, Trash2, UploadCloud, UserPlus, Users, X } from 'lucide-react'
 import { teacherApi } from '@/api/supabase-api'
 import { downloadCSV } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
@@ -38,6 +39,11 @@ export function TeacherStudentsPage() {
   const [form, setForm] = useState<NewStudentForm>(emptyForm)
   const [bulkText, setBulkText] = useState('')
   const [bulkCourse, setBulkCourse] = useState('')
+  const [bulkDragOver, setBulkDragOver] = useState(false)
+  const [bulkFileName, setBulkFileName] = useState<string | null>(null)
+  const [bulkFileError, setBulkFileError] = useState<string | null>(null)
+  const [bulkParsing, setBulkParsing] = useState(false)
+  const bulkFileRef = useRef<HTMLInputElement>(null)
   const [editStudent, setEditStudent] = useState<UserProfile | null>(null)
   const [editCourse, setEditCourse] = useState('')
   const [editSection, setEditSection] = useState('')
@@ -60,10 +66,64 @@ export function TeacherStudentsPage() {
 
   const downloadTemplate = () => {
     downloadCSV('students-template.csv', [
-      ['Full name', 'Student ID', 'Password', 'Email'],
-      ['Melchora Aquino', 'STU-2026-004', 'student123', 'aquino@example.com'],
-      ['Apolinario Mabini', 'STU-2026-005', 'student123', ''],
+      ['Full name', 'Student ID', 'Password', 'Email', 'Section'],
+      ['Melchora Aquino', 'STU-2026-004', 'student123', 'aquino@example.com', 'BSIT-1A'],
+      ['Apolinario Mabini', 'STU-2026-005', 'student123', '', 'BSIT-1A'],
     ])
+  }
+
+  const handleBulkFile = (file: File) => {
+    setBulkFileError(null)
+    if (!/\.(csv|txt)$/i.test(file.name)) {
+      setBulkFileError('Please choose a .csv file (the downloaded template format).')
+      return
+    }
+    setBulkParsing(true)
+    Papa.parse<string[]>(file, {
+      skipEmptyLines: true,
+      complete: (result) => {
+        try {
+          let rows = (result.data ?? [])
+            .map((cells) => (Array.isArray(cells) ? cells.map((c) => (c ?? '').trim()) : []))
+            .filter((cells) => cells.some((c) => c !== ''))
+          // Drop a header row when present (template header or pasted header).
+          if (rows.length > 0 && /^(full[_ ]?name|name)$/i.test(rows[0][0] ?? '')) {
+            rows = rows.slice(1)
+          }
+          const lines: string[] = []
+          let skipped = 0
+          for (const cells of rows) {
+            if (cells.length < 3 || !cells[0] || !cells[1] || !cells[2]) {
+              skipped += 1
+              continue
+            }
+            // Keep the same 5-column shape the textarea parser expects.
+            lines.push(cells.slice(0, 5).join(', '))
+          }
+          if (lines.length === 0) {
+            setBulkFileError(
+              skipped > 0
+                ? `No usable rows found (${skipped} skipped — each row needs Full name, Student ID and Password).`
+                : 'No student rows found in this file.',
+            )
+          } else {
+            setBulkText((prev) => (prev.trim() ? `${prev.trimEnd()}\n${lines.join('\n')}` : lines.join('\n')))
+            setBulkFileName(file.name)
+            toast.success(`${lines.length} student${lines.length === 1 ? '' : 's'} loaded from file${skipped > 0 ? ` (${skipped} incomplete skipped)` : ''}. Review below, then Import.`)
+          }
+        } catch {
+          setBulkFileError('Could not read this file. Make sure it is a valid CSV.')
+        } finally {
+          setBulkParsing(false)
+          if (bulkFileRef.current) bulkFileRef.current.value = ''
+        }
+      },
+      error: () => {
+        setBulkFileError('Could not read this file. Make sure it is a valid CSV.')
+        setBulkParsing(false)
+        if (bulkFileRef.current) bulkFileRef.current.value = ''
+      },
+    })
   }
 
   const createMutation = useMutation({
@@ -101,8 +161,18 @@ export function TeacherStudentsPage() {
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => {
-          const [full_name, student_id, password, ...rest] = line.split(',').map((s) => s.trim())
-          return { full_name: full_name ?? '', student_id: (student_id ?? '').toUpperCase(), password: password ?? '', email: rest.join(',') || null, course_id: bulkCourse || null }
+          // Columns: Full name, Student ID, Password, Email (optional), Section (optional).
+          // Older 3/4-column rows (without Section) keep working: missing
+          // trailing columns are treated as empty.
+          const [full_name, student_id, password, emailRaw, ...sectionRest] = line.split(',').map((s) => s.trim())
+          return {
+            full_name: full_name ?? '',
+            student_id: (student_id ?? '').toUpperCase(),
+            password: password ?? '',
+            email: emailRaw || null,
+            section: sectionRest.join(',').trim() || null,
+            course_id: bulkCourse || null,
+          }
         })
         .filter((r) => !/^(full[_ ]?name|name)$/i.test(r.full_name))
       return teacherApi.createStudents(rows)
@@ -118,6 +188,8 @@ export function TeacherStudentsPage() {
         queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
         setBulkOpen(false)
         setBulkText('')
+        setBulkFileName(null)
+        setBulkFileError(null)
       }
     },
     onError: () => toast.error('Could not import students.'),
@@ -462,7 +534,7 @@ export function TeacherStudentsPage() {
           <DialogHeader>
             <DialogTitle>Bulk import students</DialogTitle>
             <DialogDescription>
-              One student per line, comma-separated: <code className="rounded bg-muted px-1 py-0.5 text-xs">Full name, Student ID, Password, Email (optional)</code>
+              One student per line, comma-separated: <code className="rounded bg-muted px-1 py-0.5 text-xs">Full name, Student ID, Password, Email (optional), Section (optional)</code>
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -475,13 +547,59 @@ export function TeacherStudentsPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="bulk">Students</Label>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="Upload a CSV file of students"
+                onClick={() => bulkFileRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') bulkFileRef.current?.click()
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setBulkDragOver(true)
+                }}
+                onDragLeave={() => setBulkDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setBulkDragOver(false)
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) handleBulkFile(file)
+                }}
+                className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed p-4 text-center transition-colors hover:bg-muted/50 ${
+                  bulkDragOver ? 'border-primary bg-primary/5' : ''
+                }`}
+              >
+                <UploadCloud className="h-6 w-6 text-primary" />
+                <p className="text-sm font-medium">
+                  {bulkParsing ? 'Reading file…' : 'Click to choose a CSV file, or drag & drop it here'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Same columns as the template: Full name, Student ID, Password, Email, Section
+                  {bulkFileName ? ` · Loaded: ${bulkFileName}` : ''}
+                </p>
+                <input
+                  ref={bulkFileRef}
+                  type="file"
+                  accept=".csv,.txt,text/csv,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleBulkFile(file)
+                  }}
+                />
+              </div>
+              {bulkFileError ? (
+                <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{bulkFileError}</p>
+              ) : null}
               <Textarea
                 id="bulk"
                 rows={7}
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
-                placeholder={'Melchora Aquino, STU-2026-004, student123, aquino@example.com\nApolinario Mabini, STU-2026-005, student123'}
+                placeholder={'Melchora Aquino, STU-2026-004, student123, aquino@example.com, BSIT-1A\nApolinario Mabini, STU-2026-005, student123, , BSIT-1A'}
               />
+              <p className="text-xs text-muted-foreground">File rows are added to the text above — you can review or edit them before clicking Import.</p>
             </div>
             <div className="space-y-2">
               <Label>Course (optional, applied to all)</Label>

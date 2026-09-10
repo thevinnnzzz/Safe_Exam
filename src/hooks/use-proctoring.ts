@@ -5,6 +5,33 @@ import { studentApi } from '@/api/supabase-api'
 
 export const IDLE_TIMEOUT_MS = 3 * 60 * 1000
 
+/** Minimal shape for the legacy WebKit fullscreen API (older iPadOS). */
+interface WebkitDocumentElement extends HTMLElement {
+  webkitRequestFullscreen?: () => void | Promise<void>
+}
+
+interface WebkitDocument extends Document {
+  webkitFullscreenElement?: Element | null
+}
+
+/**
+ * Whether this browser can put an arbitrary page element into fullscreen.
+ * iPhone Safari / all iOS browsers (WKWebView) expose neither the standard
+ * nor the WebKit API for page elements, so this returns false there.
+ */
+export function isFullscreenSupported(): boolean {
+  if (typeof document === 'undefined') return false
+  const el = document.documentElement as WebkitDocumentElement
+  return (
+    typeof el.requestFullscreen === 'function' || typeof el.webkitRequestFullscreen === 'function'
+  )
+}
+
+function isCurrentlyFullscreen(): boolean {
+  const doc = document as WebkitDocument
+  return Boolean(doc.fullscreenElement ?? doc.webkitFullscreenElement)
+}
+
 export interface RiskCounts {
   tab_switches: number
   fullscreen_exits: number
@@ -63,6 +90,13 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
   const [risk, setRisk] = useState(0)
   const [counts, setCounts] = useState<RiskCounts>({ ...initialCounts })
   const [lastEvent, setLastEvent] = useState<string | null>(null)
+  const [isFullscreen, setIsFullscreen] = useState(() =>
+    typeof document === 'undefined' ? false : isCurrentlyFullscreen(),
+  )
+  const fullscreenSupported = useMemo(
+    () => (typeof document === 'undefined' ? false : isFullscreenSupported()),
+    [],
+  )
 
   const queueKey = `safe_exam.pending_events.${studentExamId}`
 
@@ -289,31 +323,42 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
     }
   }, [enabled, record])
 
-  // Fullscreen exit.
+  // Fullscreen exit (standard + legacy WebKit for older iPadOS).
   useEffect(() => {
     if (!enabled) return
-    fullscreenRef.current = Boolean(document.fullscreenElement)
+    fullscreenRef.current = isCurrentlyFullscreen()
+    setIsFullscreen(fullscreenRef.current)
     const onFullscreenChange = () => {
-      const isFullscreen = Boolean(document.fullscreenElement)
-      if (fullscreenRef.current && !isFullscreen) {
+      const fullscreen = isCurrentlyFullscreen()
+      if (fullscreenRef.current && !fullscreen) {
         record('fullscreen_exit', { at: new Date().toISOString() })
       }
-      fullscreenRef.current = isFullscreen
+      fullscreenRef.current = fullscreen
+      setIsFullscreen(fullscreen)
     }
     document.addEventListener('fullscreenchange', onFullscreenChange)
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener)
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener)
+    }
   }, [enabled, record])
 
   const requestFullscreen = useCallback(() => {
-    if (document.fullscreenElement) return
-    const request = document.documentElement.requestFullscreen?.bind(document.documentElement)
+    if (isCurrentlyFullscreen()) return
+    const el = document.documentElement as WebkitDocumentElement
+    const request =
+      document.documentElement.requestFullscreen?.bind(document.documentElement) ??
+      el.webkitRequestFullscreen?.bind(el)
     if (typeof request !== 'function') {
       record('warning', { message: 'Fullscreen API unavailable' })
       return
     }
-    request().catch(() => {
-      record('warning', { message: 'Fullscreen request blocked' })
-    })
+    Promise.resolve()
+      .then(() => request())
+      .catch(() => {
+        record('warning', { message: 'Fullscreen request blocked' })
+      })
   }, [record])
 
   const flushAndExit = useCallback(() => {
@@ -329,7 +374,9 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
       record,
       flush: flushAndExit,
       requestFullscreen,
+      fullscreenSupported,
+      isFullscreen,
     }),
-    [risk, counts, lastEvent, record, flushAndExit, requestFullscreen],
+    [risk, counts, lastEvent, record, flushAndExit, requestFullscreen, fullscreenSupported, isFullscreen],
   )
 }

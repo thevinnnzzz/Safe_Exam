@@ -448,6 +448,14 @@ export const teacherApi = {
     })
   },
 
+  /** Bulk-add exam access for many students (additive, never removes). */
+  async grantExamAccess(studentUserIds: string[], examIds: string[]): Promise<{ granted: number }> {
+    return rpc('fn_grant_exam_access', {
+      p_student_user_ids: studentUserIds,
+      p_exam_ids: examIds,
+    })
+  },
+
   async examStudentIds(examId: string): Promise<string[]> {
     const { data, error } = await getSupabase().from('exam_access').select('student_user_id').eq('exam_id', examId)
     if (error) throw error

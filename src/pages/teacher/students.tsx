@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Papa from 'papaparse'
 import { toast } from 'sonner'
-import { ArrowDownUp, BadgePlus, CheckCircle2, Download, Filter, KeyRound, Loader2, Pencil, Search, Trash2, UploadCloud, UserPlus, Users, X } from 'lucide-react'
+import { ArrowDownUp, BadgePlus, CheckCircle2, ChevronDown, Download, Filter, KeyRound, ListChecks, Loader2, Pencil, Search, Trash2, UploadCloud, UserPlus, Users, X } from 'lucide-react'
 import { teacherApi } from '@/api/supabase-api'
 import { downloadCSV } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
@@ -10,6 +10,18 @@ import { PageLoader } from '@/components/common/page-loader'
 import { EmptyState } from '@/components/common/empty-state'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -54,6 +66,10 @@ export function TeacherStudentsPage() {
   const [sectionFilter, setSectionFilter] = useState<string>('all')
   const [emailFilter, setEmailFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<string>('name_asc')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [grantOpen, setGrantOpen] = useState(false)
+  const [grantExamIds, setGrantExamIds] = useState<string[]>([])
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
   const studentsQuery = useQuery({ queryKey: ['teacher-students'], queryFn: () => teacherApi.teacherStudents() })
   const coursesQuery = useQuery({ queryKey: ['teacher-courses'], queryFn: () => teacherApi.courses() })
@@ -72,6 +88,48 @@ export function TeacherStudentsPage() {
     ])
   }
 
+  interface ParsedStudentInput {
+    full_name: string
+    student_id: string
+    password: string
+    email: string | null
+    section: string | null
+  }
+
+  /**
+   * Columns: Full name, Student ID, Password, Email (optional), Section (optional).
+   * Older 3/4-column rows (without Section) keep working: missing trailing
+   * columns are treated as empty.
+   */
+  const cellsToStudentInput = (cells: string[], delimiter?: string): ParsedStudentInput => {
+    let cols = cells.map((c) => (c ?? '').trim())
+    // A comma inside an unquoted value (e.g. a pasted "Andor, Cedrick S.")
+    // produces extra columns. The name is the field that may legitimately
+    // contain commas, so merge leading cells back into it.
+    if ((!delimiter || delimiter === ',') && cols.length > 5) {
+      cols = [[...cols.slice(0, cols.length - 4)].join(', '), ...cols.slice(cols.length - 4)]
+    }
+    const [full_name, student_id, password, emailRaw, ...sectionRest] = cols
+    return {
+      full_name: full_name ?? '',
+      student_id: (student_id ?? '').toUpperCase(),
+      password: password ?? '',
+      email: emailRaw || null,
+      section: sectionRest.join(',').trim() || null,
+    }
+  }
+
+  /** Drop blank rows and a header row; Papa already handles tabs/quotes. */
+  const cleanStudentCells = (data: string[][]): string[][] => {
+    const rows = data
+      .map((cells) => (Array.isArray(cells) ? cells.map((c) => (c ?? '').trim()) : []))
+      .filter((cells) => cells.some((c) => c !== ''))
+    if (rows.length > 0 && /^(full[_ ]?name|name)$/i.test(rows[0][0] ?? '')) {
+      return rows.slice(1)
+    }
+    return rows
+  }
+
   const handleBulkFile = (file: File) => {
     setBulkFileError(null)
     if (!/\.(csv|txt)$/i.test(file.name)) {
@@ -83,22 +141,21 @@ export function TeacherStudentsPage() {
       skipEmptyLines: true,
       complete: (result) => {
         try {
-          let rows = (result.data ?? [])
-            .map((cells) => (Array.isArray(cells) ? cells.map((c) => (c ?? '').trim()) : []))
-            .filter((cells) => cells.some((c) => c !== ''))
-          // Drop a header row when present (template header or pasted header).
-          if (rows.length > 0 && /^(full[_ ]?name|name)$/i.test(rows[0][0] ?? '')) {
-            rows = rows.slice(1)
-          }
+          const rows = cleanStudentCells(result.data ?? [])
           const lines: string[] = []
           let skipped = 0
+          const escapeCell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
           for (const cells of rows) {
-            if (cells.length < 3 || !cells[0] || !cells[1] || !cells[2]) {
+            const row = cellsToStudentInput(cells, result.meta.delimiter)
+            if (!row.full_name || !row.student_id || !row.password) {
               skipped += 1
               continue
             }
             // Keep the same 5-column shape the textarea parser expects.
-            lines.push(cells.slice(0, 5).join(', '))
+            // Quote values containing commas so the round-trip stays exact.
+            lines.push(
+              [row.full_name, row.student_id, row.password, row.email ?? '', row.section ?? ''].map(escapeCell).join(', '),
+            )
           }
           if (lines.length === 0) {
             setBulkFileError(
@@ -156,25 +213,14 @@ export function TeacherStudentsPage() {
 
   const bulkMutation = useMutation({
     mutationFn: () => {
-      const rows = bulkText
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          // Columns: Full name, Student ID, Password, Email (optional), Section (optional).
-          // Older 3/4-column rows (without Section) keep working: missing
-          // trailing columns are treated as empty.
-          const [full_name, student_id, password, emailRaw, ...sectionRest] = line.split(',').map((s) => s.trim())
-          return {
-            full_name: full_name ?? '',
-            student_id: (student_id ?? '').toUpperCase(),
-            password: password ?? '',
-            email: emailRaw || null,
-            section: sectionRest.join(',').trim() || null,
-            course_id: bulkCourse || null,
-          }
-        })
-        .filter((r) => !/^(full[_ ]?name|name)$/i.test(r.full_name))
+      // PapaParse auto-detects the delimiter, so pastes from Excel/Sheets
+      // (tab-separated) work as-is, and quoted values like
+      // "Andor, Cedrick S." stay in one column.
+      const parsed = Papa.parse<string[]>(bulkText, { skipEmptyLines: true })
+      const rows = cleanStudentCells(parsed.data ?? []).map((cells) => ({
+        ...cellsToStudentInput(cells, parsed.meta.delimiter),
+        course_id: bulkCourse || null,
+      }))
       return teacherApi.createStudents(rows)
     },
     onSuccess: (results) => {
@@ -224,9 +270,47 @@ export function TeacherStudentsPage() {
     onSuccess: () => {
       toast.success(`Deleted ${deleteStudent?.full_name}`)
       queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+      if (deleteStudent) setSelectedIds((prev) => prev.filter((id) => id !== deleteStudent.id))
       setDeleteStudent(null)
     },
     onError: () => toast.error('Could not delete the student.'),
+  })
+
+  const grantMutation = useMutation({
+    mutationFn: () => teacherApi.grantExamAccess(selectedIds, grantExamIds),
+    onSuccess: (result) => {
+      const n = (result as { granted?: number } | null)?.granted ?? 0
+      toast.success(`Exam access granted (${n} new assignment${n === 1 ? '' : 's'} for ${selectedIds.length} student${selectedIds.length === 1 ? '' : 's'}).`)
+      queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+      setGrantOpen(false)
+      setGrantExamIds([])
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not grant exam access.'),
+  })
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async () => {
+      const failed: string[] = []
+      for (const id of selectedIds) {
+        try {
+          await teacherApi.deleteStudent(id)
+        } catch {
+          failed.push(id)
+        }
+      }
+      return failed
+    },
+    onSuccess: (failed) => {
+      const deleted = selectedIds.length - failed.length
+      if (deleted > 0) {
+        toast.success(`Deleted ${deleted} student${deleted === 1 ? '' : 's'}`)
+        queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+        setSelectedIds((prev) => prev.filter((id) => failed.includes(id)))
+      }
+      if (failed.length > 0) toast.error(`Could not delete ${failed.length} student${failed.length === 1 ? '' : 's'}.`)
+      setBulkDeleteOpen(false)
+    },
+    onError: () => toast.error('Could not delete the selected students.'),
   })
 
   const openEdit = (s: UserProfile) => {
@@ -250,6 +334,17 @@ export function TeacherStudentsPage() {
 
   const allStudents = studentsQuery.data ?? []
 
+  const matchesSearch = (s: UserProfile, q: string) => {
+    if (!q) return true
+    return (
+      s.full_name.toLowerCase().includes(q) ||
+      (s.student_id ?? '').toLowerCase().includes(q) ||
+      (s.email ?? '').toLowerCase().includes(q) ||
+      (s.course_name ?? '').toLowerCase().includes(q) ||
+      (s.section ?? '').toLowerCase().includes(q)
+    )
+  }
+
   const sections = useMemo(() => {
     const set = new Set<string>()
     for (const s of allStudents) {
@@ -268,16 +363,7 @@ export function TeacherStudentsPage() {
         if (emailFilter === 'has' && !hasEmail) return false
         if (emailFilter === 'none' && hasEmail) return false
       }
-      if (q) {
-        return (
-          s.full_name.toLowerCase().includes(q) ||
-          (s.student_id ?? '').toLowerCase().includes(q) ||
-          (s.email ?? '').toLowerCase().includes(q) ||
-          (s.course_name ?? '').toLowerCase().includes(q) ||
-          (s.section ?? '').toLowerCase().includes(q)
-        )
-      }
-      return true
+      return matchesSearch(s, q)
     })
     return [...list].sort((a, b) => {
       switch (sortBy) {
@@ -308,6 +394,57 @@ export function TeacherStudentsPage() {
     setSectionFilter('all')
     setEmailFilter('all')
     setSortBy('name_asc')
+  }
+
+  // -------------------------------------------------------------------------
+  // Advanced selection: checkbox selection over the filtered list, plus quick
+  // "select all in course / section" shortcuts that focus the filter and
+  // select exactly what is shown (intersected with the search text).
+  // -------------------------------------------------------------------------
+  const visibleIds = useMemo(() => students.map((s) => s.id), [students])
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id))
+  const someVisibleSelected = visibleIds.some((id) => selectedSet.has(id))
+
+  const toggleOne = (id: string) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  const toggleAllVisible = () => {
+    setSelectedIds((prev) =>
+      allVisibleSelected ? prev.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...prev, ...visibleIds])),
+    )
+  }
+
+  const selectAllVisible = () => {
+    setSelectedIds((prev) => Array.from(new Set([...prev, ...visibleIds])))
+    if (visibleIds.length > 0) toast.success(`${visibleIds.length} student${visibleIds.length === 1 ? '' : 's'} selected`)
+  }
+
+  const clearSelection = () => setSelectedIds([])
+
+  const quickSelectCourse = (courseId: string) => {
+    const course = (coursesQuery.data ?? []).find((c) => c.id === courseId)
+    const q = search.trim().toLowerCase()
+    const ids = allStudents.filter((s) => s.course_id === courseId && matchesSearch(s, q)).map((s) => s.id)
+    setCourseFilter(courseId)
+    setSectionFilter('all')
+    setSelectedIds(ids)
+    toast.success(ids.length > 0 ? `${ids.length} selected in ${course?.name ?? 'course'}` : 'No students match this course')
+  }
+
+  const quickSelectSection = (section: string) => {
+    const q = search.trim().toLowerCase()
+    const ids = allStudents.filter((s) => (s.section ?? '') === section && matchesSearch(s, q)).map((s) => s.id)
+    setSectionFilter(section)
+    setCourseFilter('all')
+    setSelectedIds(ids)
+    toast.success(ids.length > 0 ? `${ids.length} selected in section ${section}` : 'No students match this section')
+  }
+
+  const openGrant = () => {
+    setGrantExamIds([])
+    setGrantOpen(true)
   }
 
   if (studentsQuery.isLoading || coursesQuery.isLoading || examsQuery.isLoading) return <PageLoader />
@@ -400,10 +537,79 @@ export function TeacherStudentsPage() {
                 Clear
               </Button>
             ) : null}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1 text-xs">
+                  <ListChecks className="h-3.5 w-3.5" />
+                  Select
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
+                <DropdownMenuLabel>Advanced selection</DropdownMenuLabel>
+                <DropdownMenuItem onClick={selectAllVisible} disabled={visibleIds.length === 0}>
+                  Select all {visibleIds.length > 0 ? `(${visibleIds.length} shown)` : ''}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={clearSelection} disabled={selectedIds.length === 0}>
+                  Clear selection{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>All in a course…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="max-h-64 overflow-y-auto">
+                    {(coursesQuery.data ?? []).length === 0 ? (
+                      <DropdownMenuLabel className="font-normal text-muted-foreground">No courses</DropdownMenuLabel>
+                    ) : (
+                      (coursesQuery.data ?? []).map((c) => (
+                        <DropdownMenuItem key={c.id} onClick={() => quickSelectCourse(c.id)}>
+                          {c.name} ({c.code})
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>All in a section…</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="max-h-64 overflow-y-auto">
+                    {sections.length === 0 ? (
+                      <DropdownMenuLabel className="font-normal text-muted-foreground">No sections</DropdownMenuLabel>
+                    ) : (
+                      sections.map((sec) => (
+                        <DropdownMenuItem key={sec} onClick={() => quickSelectSection(sec)}>
+                          {sec}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Badge variant="secondary" className="ml-auto">
               {students.length} shown
             </Badge>
           </div>
+
+          {selectedIds.length > 0 ? (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+              <span className="text-sm font-medium">
+                {selectedIds.length} selected
+              </span>
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={openGrant}>
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Grant exam access
+                </Button>
+                <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setBulkDeleteOpen(true)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </Button>
+                <Button size="sm" variant="ghost" onClick={clearSelection}>
+                  <X className="h-3.5 w-3.5" />
+                  Clear
+                </Button>
+              </div>
+            </div>
+          ) : null}
 
           {students.length === 0 ? (
             <EmptyState
@@ -427,6 +633,13 @@ export function TeacherStudentsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="Select all shown students"
+                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                      onCheckedChange={toggleAllVisible}
+                    />
+                  </TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Student ID</TableHead>
                   <TableHead>Section</TableHead>
@@ -437,7 +650,14 @@ export function TeacherStudentsPage() {
               </TableHeader>
               <TableBody>
                 {students.map((s) => (
-                  <TableRow key={s.id}>
+                  <TableRow key={s.id} data-state={selectedSet.has(s.id) ? 'selected' : undefined}>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        aria-label={`Select ${s.full_name}`}
+                        checked={selectedSet.has(s.id)}
+                        onCheckedChange={() => toggleOne(s.id)}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{s.full_name}</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{s.student_id ?? '—'}</Badge>
@@ -597,9 +817,10 @@ export function TeacherStudentsPage() {
                 rows={7}
                 value={bulkText}
                 onChange={(e) => setBulkText(e.target.value)}
-                placeholder={'Melchora Aquino, STU-2026-004, student123, aquino@example.com, BSIT-1A\nApolinario Mabini, STU-2026-005, student123, , BSIT-1A'}
+                placeholder={'"Andor, Cedrick S.", 23-37409, SM-2337409, csandor@safeexam.com, SM-4102\nApolinario Mabini, STU-2026-005, student123, , BSIT-1A'}
               />
               <p className="text-xs text-muted-foreground">File rows are added to the text above — you can review or edit them before clicking Import.</p>
+              <p className="text-xs text-muted-foreground">Pasting from Excel/Sheets works too (tabs are detected). If you type CSV by hand, wrap names containing commas in quotes.</p>
             </div>
             <div className="space-y-2">
               <Label>Course (optional, applied to all)</Label>
@@ -729,6 +950,66 @@ export function TeacherStudentsPage() {
         destructive
         onConfirm={() => deleteStudent && deleteMutation.mutate()}
         loading={deleteMutation.isPending}
+      />
+
+      <Dialog open={grantOpen} onOpenChange={setGrantOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Grant exam access</DialogTitle>
+            <DialogDescription>
+              Give all {selectedIds.length} selected student{selectedIds.length === 1 ? '' : 's'} access to the checked exams below.
+              Existing assignments are kept — nothing is removed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {(examsQuery.data ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No exams yet. Create an exam before assigning access.</p>
+            ) : (
+              (examsQuery.data ?? []).map((exam) => (
+                <label
+                  key={exam.id}
+                  className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 accent-primary"
+                    checked={grantExamIds.includes(exam.id)}
+                    onChange={() =>
+                      setGrantExamIds((prev) => (prev.includes(exam.id) ? prev.filter((id) => id !== exam.id) : [...prev, exam.id]))
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{exam.title}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {exam.status}
+                      {exam.course_name ? ` · ${exam.course_name}` : ''}
+                    </span>
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrantOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => grantMutation.mutate()} disabled={grantExamIds.length === 0 || grantMutation.isPending}>
+              {grantMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Grant to {selectedIds.length} student{selectedIds.length === 1 ? '' : 's'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title={`Delete ${selectedIds.length} student${selectedIds.length === 1 ? '' : 's'}?`}
+        description="This permanently removes the selected students along with all their attempts, answers, risk history and exam assignments. This cannot be undone."
+        confirmLabel="Delete selected"
+        destructive
+        onConfirm={() => bulkDeleteMutation.mutate()}
+        loading={bulkDeleteMutation.isPending}
       />
     </div>
   )

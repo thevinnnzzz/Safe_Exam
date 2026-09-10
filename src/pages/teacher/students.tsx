@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Papa from 'papaparse'
 import { toast } from 'sonner'
-import { ArrowDownUp, BadgePlus, CheckCircle2, ChevronDown, Download, Filter, KeyRound, ListChecks, Loader2, Pencil, Search, Trash2, UploadCloud, UserPlus, Users, X } from 'lucide-react'
+import { ArrowDownUp, BadgePlus, BookOpen, CheckCircle2, ChevronDown, Download, Filter, KeyRound, ListChecks, Loader2, Pencil, Search, Trash2, UploadCloud, UserPlus, Users, X } from 'lucide-react'
 import { teacherApi } from '@/api/supabase-api'
 import { downloadCSV } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
@@ -70,6 +70,8 @@ export function TeacherStudentsPage() {
   const [grantOpen, setGrantOpen] = useState(false)
   const [grantExamIds, setGrantExamIds] = useState<string[]>([])
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [setCourseOpen, setSetCourseOpen] = useState(false)
+  const [setCourseId, setSetCourseId] = useState('')
 
   const studentsQuery = useQuery({ queryKey: ['teacher-students'], queryFn: () => teacherApi.teacherStudents() })
   const coursesQuery = useQuery({ queryKey: ['teacher-courses'], queryFn: () => teacherApi.courses() })
@@ -313,6 +315,37 @@ export function TeacherStudentsPage() {
     onError: () => toast.error('Could not delete the selected students.'),
   })
 
+  const bulkSetCourseMutation = useMutation({
+    mutationFn: async () => {
+      // fn_update_student overwrites BOTH course and section, so each
+      // student's existing section is passed through untouched.
+      const sectionById = new Map(allStudents.map((s) => [s.id, s.section ?? null]))
+      const failed: string[] = []
+      for (const id of selectedIds) {
+        try {
+          await teacherApi.updateStudent(id, {
+            course_id: setCourseId || null,
+            section: sectionById.get(id) ?? null,
+          })
+        } catch {
+          failed.push(id)
+        }
+      }
+      return failed
+    },
+    onSuccess: (failed) => {
+      const updated = selectedIds.length - failed.length
+      const courseName = (coursesQuery.data ?? []).find((c) => c.id === setCourseId)?.name ?? 'No course'
+      if (updated > 0) {
+        toast.success(`Set course to ${courseName} for ${updated} student${updated === 1 ? '' : 's'}`)
+        queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
+      }
+      if (failed.length > 0) toast.error(`Could not update ${failed.length} student${failed.length === 1 ? '' : 's'}.`)
+      setSetCourseOpen(false)
+    },
+    onError: () => toast.error('Could not update the selected students.'),
+  })
+
   const openEdit = (s: UserProfile) => {
     setEditStudent(s)
     setEditCourse(s.course_id ?? '')
@@ -445,6 +478,21 @@ export function TeacherStudentsPage() {
   const openGrant = () => {
     setGrantExamIds([])
     setGrantOpen(true)
+  }
+
+  /** Distinct sections among the selection; a single entry means the whole selection is one section. */
+  const selectedSections = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of allStudents) {
+      if (selectedIds.includes(s.id)) set.add(s.section ?? '')
+    }
+    return [...set]
+  }, [allStudents, selectedIds])
+  const selectionSingleSection = selectedSections.length === 1 ? selectedSections[0] : null
+
+  const openSetCourse = () => {
+    setSetCourseId('')
+    setSetCourseOpen(true)
   }
 
   if (studentsQuery.isLoading || coursesQuery.isLoading || examsQuery.isLoading) return <PageLoader />
@@ -595,6 +643,10 @@ export function TeacherStudentsPage() {
                 {selectedIds.length} selected
               </span>
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={openSetCourse}>
+                  <BookOpen className="h-3.5 w-3.5" />
+                  Set course
+                </Button>
                 <Button size="sm" onClick={openGrant}>
                   <KeyRound className="h-3.5 w-3.5" />
                   Grant exam access
@@ -996,6 +1048,44 @@ export function TeacherStudentsPage() {
             <Button onClick={() => grantMutation.mutate()} disabled={grantExamIds.length === 0 || grantMutation.isPending}>
               {grantMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Grant to {selectedIds.length} student{selectedIds.length === 1 ? '' : 's'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={setCourseOpen} onOpenChange={setSetCourseOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set course for {selectedIds.length} student{selectedIds.length === 1 ? '' : 's'}</DialogTitle>
+            <DialogDescription>
+              {selectionSingleSection
+                ? `All selected students are in section ${selectionSingleSection || '—'}. Pick the course for the whole section below. Each student's section is kept as-is.`
+                : 'The selected students span multiple sections. Pick the course to apply to all of them below. Each student\'s section is kept as-is.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Course</Label>
+            <Select value={setCourseId || 'none'} onValueChange={(v) => setSetCourseId(v === 'none' ? '' : v)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a course" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No course</SelectItem>
+                {(coursesQuery.data ?? []).map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name} ({c.code})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSetCourseOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => bulkSetCourseMutation.mutate()} disabled={bulkSetCourseMutation.isPending}>
+              {bulkSetCourseMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Apply to {selectedIds.length} student{selectedIds.length === 1 ? '' : 's'}
             </Button>
           </DialogFooter>
         </DialogContent>

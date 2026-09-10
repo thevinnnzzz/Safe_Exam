@@ -18,6 +18,7 @@ import {
 import { studentApi } from '@/api/supabase-api'
 import { useProctoring, IDLE_TIMEOUT_MS } from '@/hooks/use-proctoring'
 import type { ExamQuestionPublic, StudentExam } from '@/lib/types'
+import { countWords } from '@/lib/types'
 import { EVENT_LABELS } from '@/lib/risk'
 import { formatClock } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -25,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
+import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { RiskBadge } from '@/components/common/risk-badge'
 import { QuestionPalette } from '@/components/features/student/question-palette'
@@ -65,6 +67,7 @@ export function StudentExamPage() {
   const submittedRef = useRef(false)
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const progressTimerRef = useRef<number | null>(null)
+  const essayTimerRef = useRef<number | null>(null)
   const autoResumedRef = useRef(false)
 
   const proctor = useProctoring(se?.id ?? null, {
@@ -115,11 +118,11 @@ export function StudentExamPage() {
   )
 
   const enqueueAnswerSave = useCallback(
-    (qid: string, choiceId: string | null, timeSpent: number) => {
+    (qid: string, choiceId: string | null, timeSpent: number, answerText?: string | null) => {
       if (!se) return
       setSaveStatus('saving')
       saveChainRef.current = saveChainRef.current
-        .then(() => studentApi.saveAnswer(se.id, qid, choiceId, timeSpent))
+        .then(() => studentApi.saveAnswer(se.id, qid, choiceId, timeSpent, answerText ?? null))
         .then(() => setSaveStatus('saved'))
         .catch(() => setSaveStatus('error'))
     },
@@ -135,7 +138,7 @@ export function StudentExamPage() {
       const restored: Record<string, string | null> = {}
       const times: Record<string, number> = {}
       for (const row of saved) {
-        restored[row.question_id] = row.choice_id
+        restored[row.question_id] = row.answer_text ?? row.choice_id
         times[row.question_id] = row.time_spent_seconds
       }
 
@@ -211,6 +214,10 @@ export function StudentExamPage() {
   const doSubmit = useCallback(async () => {
     if (!se || !exam || submittedRef.current) return
     submittedRef.current = true
+    if (essayTimerRef.current) {
+      window.clearTimeout(essayTimerRef.current)
+      essayTimerRef.current = null
+    }
     setPhase('submitting')
     try {
       await saveChainRef.current
@@ -297,8 +304,9 @@ export function StudentExamPage() {
   }, [])
 
   const currentQuestion = questions[currentIndex]
+  const isEssay = (qid: string) => questions.find((q) => q.question_id === qid)?.question_type === 'essay'
   const answeredIds = new Set(
-    Object.entries(answers).filter(([, v]) => v).map(([k]) => k),
+    Object.entries(answers).filter(([k, v]) => (v ?? '').trim().length > 0 && (isEssay(k) || (v ?? '').length > 0)).map(([k]) => k),
   )
   const answeredCount = answeredIds.size
   const progressPercent = questions.length ? (answeredCount / questions.length) * 100 : 0
@@ -306,6 +314,19 @@ export function StudentExamPage() {
 
   const goTo = (index: number) => {
     if (!currentQuestion) return
+    // flush any pending essay autosave for the question being left
+    if (essayTimerRef.current) {
+      window.clearTimeout(essayTimerRef.current)
+      essayTimerRef.current = null
+      const fromQid = currentQuestion.question_id
+      const pendingText = answersRef.current[fromQid]
+      if ((currentQuestion.question_type ?? 'multiple_choice') === 'essay') {
+        const deltaFlush = Math.floor((Date.now() - questionEnterRef.current) / 1000)
+        questionTimesRef.current[fromQid] = (questionTimesRef.current[fromQid] ?? 0) + Math.max(0, deltaFlush)
+        questionEnterRef.current = Date.now()
+        enqueueAnswerSave(fromQid, null, questionTimesRef.current[fromQid], pendingText ?? null)
+      }
+    }
     const fromQid = currentQuestion.question_id
     const delta = Math.floor((Date.now() - questionEnterRef.current) / 1000)
     questionTimesRef.current[fromQid] = (questionTimesRef.current[fromQid] ?? 0) + Math.max(0, delta)
@@ -326,6 +347,23 @@ export function StudentExamPage() {
     answersRef.current = next
     setAnswers(next)
     enqueueAnswerSave(qid, choiceId, questionTimesRef.current[qid])
+    scheduleProgressSave()
+  }
+
+  const handleEssayChange = (text: string) => {
+    if (!currentQuestion) return
+    const qid = currentQuestion.question_id
+    const next = { ...answersRef.current, [qid]: text }
+    answersRef.current = next
+    setAnswers(next)
+    // debounce server saves while typing; progress snapshot stays debounced too
+    if (essayTimerRef.current) window.clearTimeout(essayTimerRef.current)
+    essayTimerRef.current = window.setTimeout(() => {
+      const delta = Math.floor((Date.now() - questionEnterRef.current) / 1000)
+      questionTimesRef.current[qid] = (questionTimesRef.current[qid] ?? 0) + Math.max(0, delta)
+      questionEnterRef.current = Date.now()
+      enqueueAnswerSave(qid, null, questionTimesRef.current[qid], text)
+    }, 1200)
     scheduleProgressSave()
   }
 
@@ -381,7 +419,7 @@ export function StudentExamPage() {
               <InstructionTile icon={Timer} label="Duration" value={`${exam.duration_minutes} min`} />
               <InstructionTile icon={CalendarClock} label="Available" value="Scheduled" />
               <InstructionTile icon={CheckCircle2} label="Passing score" value={`${exam.passing_score}%`} />
-              <InstructionTile icon={ClipboardX} label="Format" value="Multiple choice" />
+              <InstructionTile icon={ClipboardX} label="Format" value="MCQ + Essay" />
             </div>
 
             {exam.instructions ? (
@@ -450,9 +488,14 @@ export function StudentExamPage() {
           <Card>
             <CardContent className="p-5">
               <div className="mb-4 flex items-center justify-between gap-2">
-                <Badge variant={currentQuestion.difficulty === 'easy' ? 'success' : currentQuestion.difficulty === 'hard' ? 'destructive' : 'warning'}>
-                  {currentQuestion.difficulty}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant={(currentQuestion.question_type ?? 'multiple_choice') === 'essay' ? 'info' : 'secondary'}>
+                    {(currentQuestion.question_type ?? 'multiple_choice') === 'essay' ? 'Essay' : 'Multiple choice'}
+                  </Badge>
+                  <Badge variant={currentQuestion.difficulty === 'easy' ? 'success' : currentQuestion.difficulty === 'hard' ? 'destructive' : 'warning'}>
+                    {currentQuestion.difficulty}
+                  </Badge>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">{currentQuestion.points} pt{currentQuestion.points !== 1 ? 's' : ''}</span>
                   {currentQuestion.category ? <Badge variant="secondary">{currentQuestion.category}</Badge> : null}
@@ -461,6 +504,14 @@ export function StudentExamPage() {
 
               <p className="text-lg font-medium leading-relaxed">{currentQuestion.content}</p>
 
+              {(currentQuestion.question_type ?? 'multiple_choice') === 'essay' ? (
+                <EssayAnswer
+                  value={answers[currentQuestion.question_id] ?? ''}
+                  minWords={currentQuestion.min_words ?? 0}
+                  maxWords={currentQuestion.max_words ?? null}
+                  onChange={handleEssayChange}
+                />
+              ) : (
               <div className="mt-5 space-y-2.5">
                 {currentQuestion.choices.map((choice) => (
                   <AnswerOption
@@ -471,6 +522,7 @@ export function StudentExamPage() {
                   />
                 ))}
               </div>
+              )}
             </CardContent>
           </Card>
 
@@ -545,6 +597,37 @@ export function StudentExamPage() {
         }}
         loading={phase === 'submitting'}
       />
+    </div>
+  )
+}
+
+function EssayAnswer({ value, minWords, maxWords, onChange }: { value: string; minWords: number; maxWords: number | null; onChange: (text: string) => void }) {
+  const words = countWords(value)
+  const underMin = minWords > 0 && words < minWords
+  const overMax = maxWords != null && maxWords > 0 && words > maxWords
+  return (
+    <div className="mt-5 space-y-2">
+      <Textarea
+        rows={10}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Write your answer here…"
+        className="min-h-[220px] leading-relaxed"
+      />
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className={underMin || overMax ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>
+          {words} word{words === 1 ? '' : 's'}
+          {minWords > 0 ? ` · minimum ${minWords}` : ''}
+          {maxWords != null && maxWords > 0 ? ` · maximum ${maxWords}` : ''}
+        </span>
+        <span className="text-muted-foreground">Saved automatically as you type</span>
+      </div>
+      {underMin ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400">You need {minWords - words} more word{minWords - words === 1 ? '' : 's'} to reach the minimum.</p>
+      ) : null}
+      {overMax ? (
+        <p className="text-xs text-rose-600 dark:text-rose-400">Over the maximum by {words - (maxWords ?? 0)} words. Consider shortening your answer.</p>
+      ) : null}
     </div>
   )
 }

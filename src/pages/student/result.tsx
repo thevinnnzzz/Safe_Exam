@@ -27,7 +27,11 @@ interface ResultAnswer {
   category: string | null
   points: number
   explanation: string | null
+  question_type?: 'multiple_choice' | 'essay'
   choice_id: string | null
+  answer_text: string | null
+  feedback: string | null
+  graded_at: string | null
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -39,6 +43,7 @@ interface ResultPayload {
     id: string
     status: string
     attempt_number?: number
+    grading_status?: 'complete' | 'pending'
     score: number | null
     score_percent: number | null
     passed: boolean | null
@@ -85,6 +90,8 @@ export function StudentResultPage() {
   const { exam, student_exam, answers, risk } = resultQuery.data
   const showScore = exam.show_score_after
   const revealAnswers = exam.allow_review
+  const gradingPending = student_exam.grading_status === 'pending'
+  const pendingEssays = answers.filter((a) => (a.question_type ?? 'multiple_choice') === 'essay' && a.points_earned === null).length
 
   return (
     <div className="mx-auto max-w-4xl animate-fade-in space-y-6">
@@ -97,8 +104,14 @@ export function StudentResultPage() {
           <p className="mt-1 text-sm opacity-90">
             {student_exam.attempt_number && student_exam.attempt_number > 1 ? `Attempt ${student_exam.attempt_number} · ` : ''}
             Submitted {student_exam.submitted_at ? new Date(student_exam.submitted_at).toLocaleString() : '—'}
+            {gradingPending ? ' · Some essays are still being graded' : ''}
           </p>
         </div>
+        {gradingPending && showScore ? (
+          <div className="border-b bg-amber-50 px-6 py-3 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+            Your score below is partial — {pendingEssays} essay{pendingEssays === 1 ? '' : 's'} still {pendingEssays === 1 ? 'needs' : 'need'} manual grading by your instructor.
+          </div>
+        ) : null}
         <CardContent className="p-6">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <ResultTile
@@ -137,12 +150,14 @@ export function StudentResultPage() {
               <ListChecks className="h-5 w-5 text-primary" />
               Answer review
             </CardTitle>
-            <CardDescription>Your answers are highlighted. Green shows the correct answer.</CardDescription>
+            <CardDescription>Your answers are highlighted. Essays show your instructor's score and feedback once graded.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {answers.map((answer, idx) => {
               const isOpen = expanded === answer.question_id
+              const isEssay = (answer.question_type ?? 'multiple_choice') === 'essay'
               const answeredCorrectly = answer.is_correct === true
+              const essayPending = isEssay && answer.points_earned === null
 
               return (
                 <div key={answer.question_id} className="rounded-lg border">
@@ -151,7 +166,13 @@ export function StudentResultPage() {
                     onClick={() => setExpanded(isOpen ? null : answer.question_id)}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left"
                   >
-                    {answeredCorrectly ? (
+                    {isEssay ? (
+                      essayPending ? (
+                        <Clock3 className="h-5 w-5 shrink-0 text-amber-500" />
+                      ) : (
+                        <CheckCircle2 className="h-5 w-5 shrink-0 text-sky-500" />
+                      )
+                    ) : answeredCorrectly ? (
                       <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
                     ) : (
                       <XCircle className="h-5 w-5 shrink-0 text-rose-500" />
@@ -161,15 +182,38 @@ export function StudentResultPage() {
                         {idx + 1}. {answer.content}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        {answer.points} pt · {answeredCorrectly ? 'Correct' : answer.choice_id ? 'Incorrect' : 'Unanswered'}
-                        {typeof answer.points_earned === 'number' ? ` · ${answer.points_earned}/${answer.points} pts` : ''}
+                        {answer.points} pt · {isEssay ? <span className="font-medium">Essay</span> : null}{' '}
+                        {isEssay
+                          ? essayPending
+                            ? 'Awaiting grading'
+                            : `Graded: ${answer.points_earned}/${answer.points}`
+                          : answeredCorrectly ? 'Correct' : answer.choice_id ? 'Incorrect' : 'Unanswered'}
+                        {!isEssay && typeof answer.points_earned === 'number' ? ` · ${answer.points_earned}/${answer.points} pts` : ''}
                       </p>
                     </div>
                     {isOpen ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
                   </button>
                   {isOpen ? (
                     <div className="space-y-2 border-t px-4 py-3">
-                      {answer.choices.map((choice) => {
+                      {isEssay ? (
+                        <>
+                          <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm whitespace-pre-line">
+                            {answer.answer_text || <span className="text-muted-foreground">No answer submitted.</span>}
+                          </div>
+                          {essayPending ? (
+                            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+                              Your instructor has not graded this essay yet. Your final score may change.
+                            </p>
+                          ) : null}
+                          {answer.feedback ? (
+                            <p className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:bg-sky-500/10 dark:text-sky-300">
+                              <span className="font-medium">Instructor feedback: </span>
+                              {answer.feedback}
+                            </p>
+                          ) : null}
+                        </>
+                      ) : (
+                      answer.choices.map((choice) => {
                         const isSelected = choice.id === answer.choice_id
                         const isCorrectChoice = choice.is_correct === true
                         return (
@@ -192,7 +236,8 @@ export function StudentResultPage() {
                             </span>
                           </div>
                         )
-                      })}
+                      })
+                      )}
                       {answer.explanation ? (
                         <p className="rounded-md bg-muted px-3 py-2 text-sm">
                           <span className="font-medium">Explanation: </span>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
+import { toast } from 'sonner'
 import {
   ArrowLeft,
   CheckCircle2,
@@ -8,6 +9,7 @@ import {
   ChevronUp,
   Clock3,
   ListChecks,
+  Loader2,
   ShieldAlert,
   TimerOff,
   Trophy,
@@ -15,6 +17,7 @@ import {
 } from 'lucide-react'
 import { getSupabase } from '@/lib/supabase'
 import { teacherApi } from '@/api/supabase-api'
+import { countWords } from '@/lib/types'
 import { EVENT_LABELS } from '@/lib/risk'
 import { formatClock, formatDateTime } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
@@ -32,7 +35,12 @@ interface ReviewAnswer {
   category: string | null
   points: number
   explanation: string | null
+  question_type?: 'multiple_choice' | 'essay'
+  model_answer?: string | null
   choice_id: string | null
+  answer_text: string | null
+  feedback: string | null
+  graded_at: string | null
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -43,6 +51,7 @@ interface ResultPayload {
   student_exam: {
     id: string
     status: string
+    grading_status?: 'complete' | 'pending'
     score: number | null
     score_percent: number | null
     passed: boolean | null
@@ -60,6 +69,7 @@ interface ResultPayload {
 export function TeacherResultDetailPage() {
   const { examId, studentExamId } = useParams<{ examId: string; studentExamId: string }>()
   const [expanded, setExpanded] = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
   const resultQuery = useQuery({
     queryKey: ['teacher-result-detail', studentExamId],
@@ -96,8 +106,20 @@ export function TeacherResultDetailPage() {
 
   const { student_exam, exam, student, answers, risk } = resultQuery.data
   const activity = activityQuery.data ?? []
-  const answered = answers.filter((a) => a.choice_id).length
+  const gradeMutation = useMutation({
+    mutationFn: ({ questionId, points, feedback }: { questionId: string; points: number; feedback: string | null }) =>
+      teacherApi.gradeEssayAnswer(studentExamId!, questionId, points, feedback),
+    onSuccess: () => {
+      toast.success('Essay graded')
+      queryClient.invalidateQueries({ queryKey: ['teacher-result-detail', studentExamId] })
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not save the grade.'),
+  })
+  const answered = answers.filter((a) => a.choice_id || (a.answer_text ?? '').trim()).length
   const correct = answers.filter((a) => a.is_correct).length
+  const pendingEssays = answers.filter(
+    (a) => (a.question_type ?? 'multiple_choice') === 'essay' && a.points_earned === null,
+  )
   const incidents = risk
     ? risk.tab_switches + risk.fullscreen_exits + risk.copy_attempts + risk.paste_attempts + risk.cut_attempts + risk.devtools_attempts + risk.idle_events
     : 0
@@ -158,39 +180,78 @@ export function TeacherResultDetailPage() {
         </CardContent>
       </Card>
 
+      {pendingEssays.length > 0 ? (
+        <div className="flex items-center gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+          <Clock3 className="h-5 w-5 shrink-0" />
+          <p>
+            <span className="font-medium">{pendingEssays.length} essay{pendingEssays.length === 1 ? '' : 's'} awaiting grading.</span>{' '}
+            Scores below are partial until you grade them.
+          </p>
+        </div>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="space-y-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm font-semibold">
                 <ListChecks className="h-4 w-4 text-primary" />
-                Answers ({correct}/{answers.length} correct)
+                Answers ({correct}/{answers.length} correct{pendingEssays.length > 0 ? ` · ${pendingEssays.length} pending` : ''})
               </CardTitle>
-              <CardDescription>Green shows the correct answer. The student's choice is marked.</CardDescription>
+              <CardDescription>Green shows the correct answer. Essays are graded manually below.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {answers.map((answer, idx) => {
-                const isOpen = expanded === answer.question_id
+                const isOpen = expanded === answer.question_id || (answer.question_type ?? 'multiple_choice') === 'essay'
+                const isEssay = (answer.question_type ?? 'multiple_choice') === 'essay'
 
                 return (
                   <div key={answer.question_id} className="rounded-lg border">
                     <button type="button" onClick={() => setExpanded(isOpen ? null : answer.question_id)} className="flex w-full items-center gap-3 px-4 py-3 text-left">
-                      {answer.is_correct ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" /> : <XCircle className="h-5 w-5 shrink-0 text-rose-500" />}
+                      {isEssay ? (
+                        answer.points_earned === null ? (
+                          <Clock3 className="h-5 w-5 shrink-0 text-amber-500" />
+                        ) : (
+                          <CheckCircle2 className="h-5 w-5 shrink-0 text-sky-500" />
+                        )
+                      ) : answer.is_correct ? (
+                        <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
+                      ) : (
+                        <XCircle className="h-5 w-5 shrink-0 text-rose-500" />
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className="font-medium leading-snug">
                           {idx + 1}. {answer.content}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {answer.points} pts · {answer.choice_id ? (answer.is_correct ? 'Correct' : 'Incorrect') : 'Unanswered'}
-                          {answer.points_earned !== null ? ` · ${answer.points_earned}/${answer.points}` : ''}
+                          {answer.points} pts ·{' '}
+                          {isEssay ? (
+                            <>
+                              <span className="font-medium">Essay</span> ·{' '}
+                              {answer.points_earned === null ? 'Needs grading' : `${answer.points_earned}/${answer.points}`}
+                            </>
+                          ) : (
+                            <>{answer.choice_id ? (answer.is_correct ? 'Correct' : 'Incorrect') : 'Unanswered'}</>
+                          )}
+                          {!isEssay && answer.points_earned !== null ? ` · ${answer.points_earned}/${answer.points}` : ''}
                           {answer.time_spent_seconds > 0 ? ` · ${Math.round(answer.time_spent_seconds / 60)} min spent` : ''}
                         </p>
                       </div>
+                      <Badge variant={isEssay ? 'info' : 'secondary'}>{isEssay ? 'Essay' : 'MCQ'}</Badge>
                       {isOpen ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
                     </button>
                     {isOpen ? (
                       <div className="space-y-2 border-t px-4 py-3">
-                        {answer.choices.map((choice) => {
+                        {isEssay ? (
+                          <EssayGradingBlock
+                            answer={answer}
+                            saving={gradeMutation.isPending}
+                            onSave={(points, feedback) =>
+                              gradeMutation.mutate({ questionId: answer.question_id, points, feedback })
+                            }
+                          />
+                        ) : (
+                        answer.choices.map((choice) => {
                           const isSelected = choice.id === answer.choice_id
                           return (
                             <div
@@ -209,7 +270,8 @@ export function TeacherResultDetailPage() {
                               {choice.is_correct ? <Badge variant="success" className="ml-auto">Correct</Badge> : null}
                             </div>
                           )
-                        })}
+                        })
+                        )}
                         {answer.explanation ? (
                           <p className="rounded-md bg-muted px-3 py-2 text-sm">
                             <span className="font-medium">Explanation: </span>
@@ -283,6 +345,73 @@ export function TeacherResultDetailPage() {
           </Card>
         </div>
       </div>
+    </div>
+  )
+}
+
+function EssayGradingBlock({
+  answer,
+  saving,
+  onSave,
+}: {
+  answer: ReviewAnswer
+  saving: boolean
+  onSave: (points: number, feedback: string | null) => void
+}) {
+  const [points, setPoints] = useState<string>(answer.points_earned !== null ? String(answer.points_earned) : '')
+  const [feedback, setFeedback] = useState<string>(answer.feedback ?? '')
+  const words = countWords(answer.answer_text)
+  const parsed = Number(points)
+  const valid = points.trim() !== '' && Number.isFinite(parsed) && parsed >= 0 && parsed <= answer.points
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm whitespace-pre-line">
+        {answer.answer_text || <span className="text-muted-foreground">No answer submitted.</span>}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {words} word{words === 1 ? '' : 's'}
+        {answer.graded_at ? ` · graded ${formatDateTime(answer.graded_at)}` : ' · not graded yet'}
+      </p>
+      {answer.model_answer ? (
+        <p className="rounded-md border border-dashed px-3 py-2 text-sm">
+          <span className="font-medium">Model answer (only you see this): </span>
+          {answer.model_answer}
+        </p>
+      ) : null}
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Score (max {answer.points})</label>
+          <input
+            type="number"
+            min={0}
+            max={answer.points}
+            step="0.5"
+            value={points}
+            onChange={(e) => setPoints(e.target.value)}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            placeholder={`0–${answer.points}`}
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Feedback (shown to student)</label>
+          <input
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+            placeholder="e.g. Good argument, missing citation…"
+          />
+        </div>
+        <div className="flex items-end">
+          <Button size="sm" disabled={!valid || saving} onClick={() => onSave(parsed, feedback.trim() || null)}>
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Save grade
+          </Button>
+        </div>
+      </div>
+      {!valid && points.trim() !== '' ? (
+        <p className="text-xs text-destructive">Enter a score between 0 and {answer.points}.</p>
+      ) : null}
     </div>
   )
 }

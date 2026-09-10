@@ -82,12 +82,13 @@ export const studentApi = {
     return rpc<ExamQuestionPublic[]>('fn_student_exam_questions', { p_student_exam_id: studentExamId })
   },
 
-  async saveAnswer(studentExamId: string, questionId: string, choiceId: string | null, timeSpent: number) {
+  async saveAnswer(studentExamId: string, questionId: string, choiceId: string | null, timeSpent: number, answerText?: string | null) {
     await rpc('fn_save_answer', {
       p_student_exam_id: studentExamId,
       p_question_id: questionId,
       p_choice_id: choiceId,
       p_time_spent: timeSpent,
+      p_answer_text: answerText ?? null,
     })
   },
 
@@ -122,13 +123,13 @@ export const studentApi = {
     return (data ?? []) as ActivityLog[]
   },
 
-  async myAnswers(studentExamId: string): Promise<Pick<StudentAnswer, 'question_id' | 'choice_id' | 'time_spent_seconds'>[]> {
+  async myAnswers(studentExamId: string): Promise<Pick<StudentAnswer, 'question_id' | 'choice_id' | 'answer_text' | 'time_spent_seconds'>[]> {
     const { data, error } = await getSupabase()
       .from('student_answers')
-      .select('question_id, choice_id, time_spent_seconds')
+      .select('question_id, choice_id, answer_text, time_spent_seconds')
       .eq('student_exam_id', studentExamId)
     if (error) throw error
-    return (data ?? []) as Pick<StudentAnswer, 'question_id' | 'choice_id' | 'time_spent_seconds'>[]
+    return (data ?? []) as Pick<StudentAnswer, 'question_id' | 'choice_id' | 'answer_text' | 'time_spent_seconds'>[]
   },
 
   async exam(id: string): Promise<Exam> {
@@ -261,22 +262,25 @@ export const teacherApi = {
 
   async createQuestion(
     bankId: string | null,
-    q: { content: string; difficulty: string; category: string | null; points: number; explanation: string | null; choices: { content: string; is_correct: boolean }[] },
+    q: { content: string; difficulty: string; category: string | null; points: number; explanation: string | null; choices: { content: string; is_correct: boolean }[]; question_type?: string; model_answer?: string | null; min_words?: number; max_words?: number | null },
   ) {
+    const questionType = q.question_type ?? 'multiple_choice'
     const { data: question, error: qError } = await getSupabase()
       .from('questions')
-      .insert({ question_bank_id: bankId, teacher_id: getStoredUser()?.id, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation })
+      .insert({ question_bank_id: bankId, teacher_id: getStoredUser()?.id, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation, question_type: questionType, model_answer: q.model_answer ?? null, min_words: q.min_words ?? 0, max_words: q.max_words ?? null })
       .select()
       .single()
     if (qError) throw qError
-    const { error: cError } = await getSupabase().from('choices').insert(
-      q.choices.map((c, i) => ({ question_id: question.id, content: c.content, is_correct: c.is_correct, position: i })),
-    )
-    if (cError) throw cError
+    if (questionType === 'multiple_choice' && q.choices.length > 0) {
+      const { error: cError } = await getSupabase().from('choices').insert(
+        q.choices.map((c, i) => ({ question_id: question.id, content: c.content, is_correct: c.is_correct, position: i })),
+      )
+      if (cError) throw cError
+    }
     return question
   },
 
-  async updateQuestion(questionId: string, patch: Partial<{ content: string; difficulty: string; category: string | null; points: number; explanation: string | null }>) {
+  async updateQuestion(questionId: string, patch: Partial<{ content: string; difficulty: string; category: string | null; points: number; explanation: string | null; question_type: string; model_answer: string | null; min_words: number; max_words: number | null }>) {
     const { error } = await getSupabase().from('questions').update(patch).eq('id', questionId)
     if (error) throw error
   },
@@ -459,6 +463,19 @@ export const teacherApi = {
 
   async resultDetail(studentExamId: string) {
     return rpc('fn_result_detail', { p_student_exam_id: studentExamId })
+  },
+
+  async gradeEssayAnswer(studentExamId: string, questionId: string, points: number, feedback?: string | null) {
+    return rpc('fn_grade_essay_answer', {
+      p_student_exam_id: studentExamId,
+      p_question_id: questionId,
+      p_points: points,
+      p_feedback: feedback ?? null,
+    })
+  },
+
+  async pendingEssayCounts(examId: string): Promise<{ student_exam_id: string; pending_count: number }[]> {
+    return rpc('fn_pending_essay_count', { p_exam_id: examId })
   },
 
   async exportResults(examId: string) {

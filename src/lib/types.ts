@@ -2,6 +2,10 @@ export type Role = 'student' | 'teacher'
 
 export type Difficulty = 'easy' | 'medium' | 'hard'
 
+export type QuestionType = 'multiple_choice' | 'essay'
+
+export type GradingStatus = 'complete' | 'pending'
+
 export type ExamStatus = 'draft' | 'published' | 'archived'
 
 export type StudentExamStatus = 'not_started' | 'in_progress' | 'submitted' | 'time_up'
@@ -61,6 +65,10 @@ export interface Question {
   points: number
   explanation: string | null
   created_at: string
+  question_type: QuestionType
+  model_answer: string | null
+  min_words: number
+  max_words: number | null
   choices?: Choice[]
 }
 
@@ -116,6 +124,7 @@ export interface StudentExam {
   risk_score: number
   is_online: boolean
   last_active_at: string | null
+  grading_status?: GradingStatus
   exam?: Exam
   student?: { id: string; full_name: string; student_id: string } | null
 }
@@ -125,6 +134,10 @@ export interface StudentAnswer {
   student_exam_id: string
   question_id: string
   choice_id: string | null
+  answer_text: string | null
+  feedback: string | null
+  graded_by: string | null
+  graded_at: string | null
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -207,5 +220,14 @@ export interface ExamQuestionPublic {
   difficulty: Difficulty
   category: string | null
   explanation: string | null
+  question_type: QuestionType
+  min_words: number
+  max_words: number | null
   choices: PublicChoice[]
+}
+
+/** Essay word-count helper shared by student + teacher UIs. */
+export function countWords(text: string | null | undefined): number {
+  if (!text) return 0
+  return text.trim().split(/\s+/).filter(Boolean).length
 }

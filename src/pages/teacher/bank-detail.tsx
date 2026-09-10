@@ -24,6 +24,10 @@ interface BankQuestion {
   points: number
   explanation: string | null
   created_at: string
+  question_type?: 'multiple_choice' | 'essay'
+  model_answer?: string | null
+  min_words?: number
+  max_words?: number | null
   choices: { id: string; content: string; is_correct: boolean; position: number }[]
 }
 
@@ -124,18 +128,37 @@ export function BankDetailPage() {
         <div className="space-y-3">
           {questions.map((question) => {
             const correct = question.choices.find((c) => c.is_correct)
+            const isEssay = (question.question_type ?? 'multiple_choice') === 'essay'
             return (
               <Card key={question.id}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
                       <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                        <Badge variant={isEssay ? 'info' : 'secondary'}>{isEssay ? 'Essay' : 'MCQ'}</Badge>
                         <Badge variant={question.difficulty === 'easy' ? 'success' : question.difficulty === 'hard' ? 'destructive' : 'warning'}>{question.difficulty}</Badge>
                         {question.category ? <Badge variant="secondary">{question.category}</Badge> : null}
                         <Badge variant="outline">{question.points} pts</Badge>
+                        {isEssay && (question.min_words || question.max_words) ? (
+                          <Badge variant="outline">
+                            {question.min_words ? `${question.min_words}+` : ''}{question.min_words && question.max_words ? ' / ' : ''}{question.max_words ? `max ${question.max_words}` : ''} words
+                          </Badge>
+                        ) : null}
                         <span className="text-xs text-muted-foreground">{formatDateTime(question.created_at)}</span>
                       </div>
                       <p className="font-medium leading-snug">{question.content}</p>
+                      {isEssay ? (
+                        <div className="mt-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                          <p className="text-xs font-semibold uppercase tracking-wide">Essay — manually graded</p>
+                          {question.model_answer ? (
+                            <p className="mt-1.5 text-sm text-foreground">
+                              <span className="font-medium">Model answer:</span> {question.model_answer}
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-xs">No model answer set.</p>
+                          )}
+                        </div>
+                      ) : (
                       <div className="mt-3 grid gap-1 sm:grid-cols-2">
                         {question.choices.map((choice) => (
                           <div
@@ -151,15 +174,18 @@ export function BankDetailPage() {
                           </div>
                         ))}
                       </div>
+                      )}
                       {question.explanation ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           <span className="font-medium">Explanation:</span> {question.explanation}
                         </p>
                       ) : null}
+                      {!isEssay ? (
                       <p className="mt-2 text-xs text-muted-foreground">
                         <span className="font-medium">Correct answer:</span>{' '}
                         <span className="text-emerald-600 dark:text-emerald-400">{correct?.content ?? '—'}</span>
                       </p>
+                      ) : null}
                     </div>
                     <div className="flex shrink-0 gap-1">
                       <Button
@@ -174,6 +200,10 @@ export function BankDetailPage() {
                             category: question.category,
                             points: question.points,
                             explanation: question.explanation,
+                            question_type: (question.question_type ?? 'multiple_choice') as 'multiple_choice' | 'essay',
+                            model_answer: question.model_answer ?? null,
+                            min_words: question.min_words ?? 0,
+                            max_words: question.max_words ?? null,
                             choices: question.choices.map((c) => ({ content: c.content, is_correct: c.is_correct })),
                           })
                           setFormOpen(true)

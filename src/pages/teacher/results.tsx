@@ -158,6 +158,9 @@ export function TeacherResultsPage() {
                         ) : (
                           <Badge variant="outline">Not started</Badge>
                         )}
+                        {record.grading_status === 'pending' ? (
+                          <Badge variant="warning" className="ml-1">Needs grading</Badge>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-right">
                         <Button asChild variant="ghost" size="sm">

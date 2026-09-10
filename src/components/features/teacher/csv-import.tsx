@@ -44,6 +44,10 @@ interface ParsedRow {
   category: string
   points: string
   explanation: string
+  type: string
+  model_answer: string
+  min_words: string
+  max_words: string
 }
 
 /** Normalized question ready for insert — shared by the CSV and TXT parsers. */
@@ -53,6 +57,10 @@ interface ImportRow {
   category: string | null
   points: number
   explanation: string | null
+  question_type: 'multiple_choice' | 'essay'
+  model_answer: string | null
+  min_words: number
+  max_words: number | null
   choices: { content: string; is_correct: boolean }[]
 }
 
@@ -61,7 +69,28 @@ function normalizeDifficulty(value: string | undefined): 'easy' | 'medium' | 'ha
   return v === 'easy' || v === 'hard' ? v : 'medium'
 }
 
+function normalizeType(value: string | undefined): 'multiple_choice' | 'essay' {
+  const v = (value ?? '').trim().toLowerCase()
+  return v === 'essay' ? 'essay' : 'multiple_choice'
+}
+
 function csvRowToImport(row: ParsedRow): ImportRow {
+  const questionType = normalizeType(row.type)
+  const maxWords = Number(row.max_words) || 0
+  if (questionType === 'essay') {
+    return {
+      content: (row.question ?? '').trim(),
+      difficulty: normalizeDifficulty(row.difficulty),
+      category: (row.category ?? '').trim() || null,
+      points: Math.max(1, Number(row.points) || 1),
+      explanation: (row.explanation ?? '').trim() || null,
+      question_type: 'essay',
+      model_answer: (row.model_answer ?? '').trim() || null,
+      min_words: Math.max(0, Number(row.min_words) || 0),
+      max_words: maxWords > 0 ? maxWords : null,
+      choices: [],
+    }
+  }
   const choices = [row.choice_a, row.choice_b, row.choice_c, row.choice_d].map((c) => (c ?? '').trim())
   const correctUpper = (row.correct ?? '').trim().toUpperCase()
   const byLetter = ['A', 'B', 'C', 'D'].indexOf(correctUpper)
@@ -72,12 +101,16 @@ function csvRowToImport(row: ParsedRow): ImportRow {
     category: (row.category ?? '').trim() || null,
     points: Math.max(1, Number(row.points) || 1),
     explanation: (row.explanation ?? '').trim() || null,
+    question_type: 'multiple_choice',
+    model_answer: null,
+    min_words: 0,
+    max_words: null,
     choices: choices.map((content, i) => ({ content, is_correct: i === correctIndex })),
   }
 }
 
 const AIKEN_CHOICE_RE = /^(\*?)\s*([A-Fa-f])\s*[).:-]\s*(.+)$/
-const AIKEN_META_RE = /^(explanation|difficulty|category|points?)\s*[:-]\s*(.*)$/i
+const AIKEN_META_RE = /^(explanation|difficulty|category|points?|type|model answer|min words|max words)\s*[:-]\s*(.*)$/i
 
 function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
   // Strip UTF-8 BOM and normalize Windows/mac line endings.
@@ -108,13 +141,17 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
     let difficulty: string | undefined
     let category: string | null = null
     let points: number | undefined
+    let qtype: 'multiple_choice' | 'essay' = 'multiple_choice'
+    let modelAnswer: string | null = null
+    let minWords = 0
+    let maxWords: number | null = null
     let expectedLetterIndex = 0
     let sawChoice = false
     let correctCount = 0
 
     for (const line of lines) {
       const choiceMatch = line.match(AIKEN_CHOICE_RE)
-      if (choiceMatch) {
+      if (choiceMatch && qtype !== 'essay') {
         const letterIndex = choiceMatch[2].toUpperCase().charCodeAt(0) - 65
         if (letterIndex !== expectedLetterIndex) {
           errors.push(`${label}: choices must be labeled in order (A, B, C, …).`)
@@ -135,6 +172,10 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
         if (key === 'explanation') explanation = value || null
         else if (key === 'difficulty') difficulty = value
         else if (key === 'category') category = value || null
+        else if (key === 'type') qtype = normalizeType(value)
+        else if (key === 'model answer') modelAnswer = value || null
+        else if (key === 'min words') minWords = Math.max(0, Number(value) || 0)
+        else if (key === 'max words') maxWords = Number(value) > 0 ? Number(value) : null
         else points = Math.max(1, Number(value) || 1)
         continue
       }
@@ -150,6 +191,21 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
     const content = questionLines.join(' ').trim()
     if (!content) {
       errors.push(`${label}: missing question text.`)
+      return
+    }
+    if (qtype === 'essay') {
+      rows.push({
+        content,
+        difficulty: normalizeDifficulty(difficulty),
+        category,
+        points: points ?? 1,
+        explanation,
+        question_type: 'essay',
+        model_answer: modelAnswer,
+        min_words: minWords,
+        max_words: maxWords,
+        choices: [],
+      })
       return
     }
     if (choices.length < 2) {
@@ -171,6 +227,10 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
       category,
       points: points ?? 1,
       explanation,
+      question_type: 'multiple_choice',
+      model_answer: null,
+      min_words: 0,
+      max_words: null,
       choices,
     })
   })
@@ -187,9 +247,10 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
 
   const downloadCsvTemplate = () => {
     downloadCSV('questions-template.csv', [
-      ['question', 'choice_a', 'choice_b', 'choice_c', 'choice_d', 'correct', 'difficulty', 'category', 'points', 'explanation'],
-      ['What is the capital of France?', 'Berlin', 'Madrid', 'Paris', 'Rome', 'C', 'easy', 'Geography', '1', 'Paris is the capital of France.'],
-      ['2 + 2 = ?', '3', '4', '5', '6', 'B', 'easy', 'Math', '1', 'Two plus two equals four.'],
+      ['question', 'type', 'choice_a', 'choice_b', 'choice_c', 'choice_d', 'correct', 'difficulty', 'category', 'points', 'explanation', 'model_answer', 'min_words', 'max_words'],
+      ['What is the capital of France?', 'multiple_choice', 'Berlin', 'Madrid', 'Paris', 'Rome', 'C', 'easy', 'Geography', '1', 'Paris is the capital of France.', '', '', ''],
+      ['2 + 2 = ?', 'multiple_choice', '3', '4', '5', '6', 'B', 'easy', 'Math', '1', 'Two plus two equals four.', '', '', ''],
+      ['Explain the causes of World War I.', 'essay', '', '', '', '', '', 'medium', 'History', '10', '', 'Militarism, alliances, imperialism, nationalism.', '100', '500'],
     ])
   }
 
@@ -315,6 +376,7 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
       validationErrors.push('The file contains no questions.')
     }
     rows.forEach((row, i) => {
+      if (row.question_type === 'essay') return
       if (row.choices.some((c) => !c.content)) validationErrors.push(`Question ${i + 1}: every choice must have text.`)
       if (!row.choices.some((c) => c.is_correct)) validationErrors.push(`Question ${i + 1}: no correct answer is marked.`)
     })
@@ -335,6 +397,10 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
           points: row.points,
           explanation: row.explanation,
           choices: row.choices,
+          question_type: row.question_type,
+          model_answer: row.model_answer,
+          min_words: row.min_words,
+          max_words: row.max_words,
         })
         ok += 1
       }
@@ -356,8 +422,8 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
         <DialogHeader>
           <DialogTitle>Import questions</DialogTitle>
           <DialogDescription>
-            CSV (<code className="rounded bg-muted px-1 text-xs">question,choice_a,…</code>) or TXT in Aiken format (
-            <code className="rounded bg-muted px-1 text-xs">* marks the correct choice</code>, blank line between questions).
+            CSV (<code className="rounded bg-muted px-1 text-xs">question,type,choice_a,…</code>, type = multiple_choice|essay) or TXT in Aiken format (
+            <code className="rounded bg-muted px-1 text-xs">* marks the correct choice</code>, blank line between questions; essays use <code className="rounded bg-muted px-1 text-xs">Type: essay</code>).
           </DialogDescription>
         </DialogHeader>
 

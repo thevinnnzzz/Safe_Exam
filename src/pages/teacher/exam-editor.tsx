@@ -56,6 +56,7 @@ interface SelectedQuestion {
   difficulty: string
   category: string | null
   points: number
+  question_type?: 'multiple_choice' | 'essay'
 }
 
 function toLocalInput(iso: string | null | undefined): string {
@@ -178,6 +179,7 @@ export function ExamEditorPage() {
             difficulty: q.difficulty,
             category: q.category,
             points: q.points,
+            question_type: (q.question_type ?? 'multiple_choice') as 'multiple_choice' | 'essay',
           })),
       )
     }
@@ -253,6 +255,9 @@ export function ExamEditorPage() {
   if (isLoading) return <PageLoader />
 
   const courseId = watch('course_id')
+  const mcqCount = selected.filter((q) => (q.question_type ?? 'multiple_choice') === 'multiple_choice').length
+  const essayCount = selected.length - mcqCount
+  const totalPoints = selected.reduce((sum, q) => sum + (q.points ?? 0), 0)
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -482,7 +487,9 @@ export function ExamEditorPage() {
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div>
                 <CardTitle className="text-base">Exam questions</CardTitle>
-                <CardDescription>{selected.length} selected</CardDescription>
+                <CardDescription>
+                  {selected.length} selected{selected.length > 0 ? ` (${mcqCount} MCQ · ${essayCount} essay · ${totalPoints} pts)` : ''}
+                </CardDescription>
               </div>
               <Button size="sm" onClick={() => setAddDialog(true)} type="button">
                 <Plus className="h-4 w-4" />
@@ -524,6 +531,9 @@ export function ExamEditorPage() {
                       </div>
                     </div>
                     <div className="mt-1.5 flex items-center gap-1.5 pl-7">
+                      <Badge variant={(q.question_type ?? 'multiple_choice') === 'essay' ? 'info' : 'secondary'}>
+                        {(q.question_type ?? 'multiple_choice') === 'essay' ? 'Essay' : 'MCQ'}
+                      </Badge>
                       <Badge variant={q.difficulty === 'easy' ? 'success' : q.difficulty === 'hard' ? 'destructive' : 'warning'}>{q.difficulty}</Badge>
                       {q.category ? <Badge variant="secondary">{q.category}</Badge> : null}
                       <span className="text-xs text-muted-foreground">{q.points} pts</span>
@@ -668,6 +678,7 @@ function AddQuestionsDialog({
                     ) : (
                       filteredQuestions.map((q) => {
                         const isSelected = selectedIds.has(q.question_id)
+                        const isEssay = (q.question_type ?? 'multiple_choice') === 'essay'
                         return (
                           <button
                             key={q.question_id}
@@ -679,6 +690,7 @@ function AddQuestionsDialog({
                           >
                             {isSelected ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" /> : <Plus className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
                             <span className="min-w-0 flex-1">{q.content}</span>
+                            <Badge variant={isEssay ? 'info' : 'secondary'}>{isEssay ? 'Essay' : 'MCQ'}</Badge>
                             <Badge variant="secondary">{q.points} pts</Badge>
                           </button>
                         )

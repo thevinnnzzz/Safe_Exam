@@ -69,6 +69,8 @@ export interface Question {
   model_answer: string | null
   min_words: number
   max_words: number | null
+  essay_keywords: string[]
+  essay_autograde: boolean
   choices?: Choice[]
 }
 
@@ -87,6 +89,7 @@ export interface Exam {
   randomize_choices: boolean
   show_score_after: boolean
   allow_review: boolean
+  allow_history: boolean
   auto_submit: boolean
   status: ExamStatus
   published_at: string | null
@@ -96,6 +99,8 @@ export interface Exam {
   question_count?: number
   assigned_count?: number
   total_points?: number
+  /** Student-scoped: extra attempts granted beyond the first (from exam_access). */
+  retakes_allowed?: number
 }
 
 export interface ExamQuestion {
@@ -138,6 +143,7 @@ export interface StudentAnswer {
   feedback: string | null
   graded_by: string | null
   graded_at: string | null
+  auto_graded: boolean
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -230,4 +236,9 @@ export interface ExamQuestionPublic {
 export function countWords(text: string | null | undefined): number {
   if (!text) return 0
   return text.trim().split(/\s+/).filter(Boolean).length
+}
+
+/** Whether a student may see this attempt in history / open its review. */
+export function isHistoryVisible(attempt: { exam?: { allow_history?: boolean | null } | null }): boolean {
+  return attempt.exam?.allow_history !== false
 }

@@ -192,7 +192,9 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
     }
   }, [enabled, record])
 
-  // Blocking + detection of copy/paste/cut/selection/right-click/devtools.
+  // Blocking + detection of copy/paste/cut/right-click/devtools.
+  // Text selection is disabled via CSS (select-none) during the exam instead
+  // of being tracked as an event.
   useEffect(() => {
     if (!enabled) return
 
@@ -217,10 +219,6 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
       block(e)
       record('right_click')
     }
-    const onSelectStart = (e: Event) => {
-      block(e)
-      record('selection_attempt')
-    }
     const onKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
       const target = e.target as HTMLElement | null
@@ -233,7 +231,6 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
       const isCopy = e.ctrlKey && !e.shiftKey && !e.altKey && key === 'c'
       const isPaste = e.ctrlKey && !e.shiftKey && !e.altKey && key === 'v'
       const isCut = e.ctrlKey && !e.shiftKey && !e.altKey && key === 'x'
-      const isSelectAll = e.ctrlKey && !e.shiftKey && !e.altKey && key === 'a'
       const isRefresh = key === 'f5' || (e.ctrlKey && !e.altKey && key === 'r')
       const isBackForward = (e.altKey && (key === 'arrowleft' || key === 'arrowright')) || (!inField && key === 'backspace')
       const isFind = e.ctrlKey && !e.shiftKey && !e.altKey && key === 'f'
@@ -254,9 +251,6 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
       } else if (isCut) {
         e.preventDefault()
         record('cut_attempt')
-      } else if (isSelectAll) {
-        e.preventDefault()
-        record('selection_attempt')
       } else if (isRefresh) {
         e.preventDefault()
         record('refresh_attempt', { keys: e.ctrlKey ? 'Ctrl+R' : 'F5' })
@@ -285,7 +279,6 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
     document.addEventListener('paste', onPaste, true)
     document.addEventListener('cut', onCut, true)
     document.addEventListener('contextmenu', onContextMenu, true)
-    document.addEventListener('selectstart', onSelectStart, true)
     document.addEventListener('keydown', onKeyDown, true)
 
     return () => {
@@ -293,7 +286,6 @@ export function useProctoring(studentExamId: string | null, { enabled, onViolati
       document.removeEventListener('paste', onPaste, true)
       document.removeEventListener('cut', onCut, true)
       document.removeEventListener('contextmenu', onContextMenu, true)
-      document.removeEventListener('selectstart', onSelectStart, true)
       document.removeEventListener('keydown', onKeyDown, true)
     }
   }, [enabled, record])

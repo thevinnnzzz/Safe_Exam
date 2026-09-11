@@ -219,7 +219,8 @@ export function ExamEditorPage() {
       queryClient.invalidateQueries({ queryKey: ['teacher-students'] })
       navigate(`/teacher/exams/${id}`)
     },
-    onError: () => toast.error('Could not save the exam.'),
+    onError: (err) =>
+      toast.error(err instanceof Error ? `Could not save the exam: ${err.message}` : 'Could not save the exam.'),
   })
 
   const onSubmit = (values: ExamFormValues) => {

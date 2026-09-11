@@ -37,10 +37,13 @@ interface ReviewAnswer {
   explanation: string | null
   question_type?: 'multiple_choice' | 'essay'
   model_answer?: string | null
+  essay_keywords?: string[]
+  essay_autograde?: boolean
   choice_id: string | null
   answer_text: string | null
   feedback: string | null
   graded_at: string | null
+  auto_graded?: boolean
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -92,20 +95,7 @@ export function TeacherResultDetailPage() {
     enabled: !!studentExamId,
   })
 
-  if (resultQuery.isLoading) return <PageLoader />
-  if (resultQuery.isError || !resultQuery.data) {
-    return (
-      <div className="py-16 text-center">
-        <p className="font-semibold">Result not found</p>
-        <Button asChild variant="outline" className="mt-4">
-          <Link to={`/teacher/exams/${examId}/results`}>Back to results</Link>
-        </Button>
-      </div>
-    )
-  }
-
-  const { student_exam, exam, student, answers, risk } = resultQuery.data
-  const activity = activityQuery.data ?? []
+  // NOTE: all hooks must run before any early return (Rules of Hooks).
   const gradeMutation = useMutation({
     mutationFn: ({ questionId, points, feedback }: { questionId: string; points: number; feedback: string | null }) =>
       teacherApi.gradeEssayAnswer(studentExamId!, questionId, points, feedback),
@@ -115,6 +105,38 @@ export function TeacherResultDetailPage() {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not save the grade.'),
   })
+
+  const autogradeMutation = useMutation({
+    mutationFn: () => teacherApi.autogradeAttemptEssays(studentExamId!),
+    onSuccess: (result) => {
+      const graded = (result as { graded?: number; pending?: number } | null)?.graded ?? 0
+      const pending = (result as { graded?: number; pending?: number } | null)?.pending ?? 0
+      toast.success(
+        graded > 0
+          ? `Auto-graded ${graded} essay${graded === 1 ? '' : 's'}${pending > 0 ? ` (${pending} still need manual grading)` : ''}`
+          : 'Nothing auto-graded — the pending essays have no keywords yet. Add keywords to the essay questions, then run again.',
+      )
+      queryClient.invalidateQueries({ queryKey: ['teacher-result-detail', studentExamId] })
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not run auto-grading.'),
+  })
+
+  if (resultQuery.isLoading) return <PageLoader />
+  if (resultQuery.isError || !resultQuery.data) {
+    const message = resultQuery.error instanceof Error ? resultQuery.error.message : null
+    return (
+      <div className="py-16 text-center">
+        <p className="font-semibold">Result not found</p>
+        {message ? <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{message}</p> : null}
+        <Button asChild variant="outline" className="mt-4">
+          <Link to={`/teacher/exams/${examId}/results`}>Back to results</Link>
+        </Button>
+      </div>
+    )
+  }
+
+  const { student_exam, exam, student, answers, risk } = resultQuery.data
+  const activity = activityQuery.data ?? []
   const answered = answers.filter((a) => a.choice_id || (a.answer_text ?? '').trim()).length
   const correct = answers.filter((a) => a.is_correct).length
   const pendingEssays = answers.filter(
@@ -163,11 +185,17 @@ export function TeacherResultDetailPage() {
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Metric icon={Trophy} label="Score" value={student_exam.score_percent !== null ? `${student_exam.score_percent}%` : '—'} sub={student_exam.score !== null ? `${student_exam.score} points` : undefined} />
             <Metric
-              icon={student_exam.passed ? CheckCircle2 : XCircle}
+              icon={student_exam.passed === null ? Clock3 : student_exam.passed ? CheckCircle2 : XCircle}
               label="Result"
-              value={student_exam.passed === null ? '—' : student_exam.passed ? 'Passed' : 'Failed'}
-              sub={`Passing: ${exam.passing_score}%`}
-              accent={student_exam.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
+              value={student_exam.passed === null ? 'Pending grading' : student_exam.passed ? 'Passed' : 'Failed'}
+              sub={student_exam.passed === null ? 'Essays still need manual grading' : `Passing: ${exam.passing_score}%`}
+              accent={
+                student_exam.passed === null
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : student_exam.passed
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-rose-600 dark:text-rose-400'
+              }
             />
             <Metric icon={Clock3} label="Time used" value={formatClock(student_exam.time_used_seconds)} sub={`Started ${student_exam.started_at ? formatDateTime(student_exam.started_at) : '—'}`} />
             <Metric
@@ -181,12 +209,24 @@ export function TeacherResultDetailPage() {
       </Card>
 
       {pendingEssays.length > 0 ? (
-        <div className="flex items-center gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
-          <Clock3 className="h-5 w-5 shrink-0" />
-          <p>
-            <span className="font-medium">{pendingEssays.length} essay{pendingEssays.length === 1 ? '' : 's'} awaiting grading.</span>{' '}
-            Scores below are partial until you grade them.
+        <div className="flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:bg-amber-500/10 dark:text-amber-300">
+          <p className="flex items-center gap-2">
+            <Clock3 className="h-5 w-5 shrink-0" />
+            <span>
+              <span className="font-medium">{pendingEssays.length} essay{pendingEssays.length === 1 ? '' : 's'} awaiting grading.</span>{' '}
+              Scores below are partial until you grade them.
+            </span>
           </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            disabled={autogradeMutation.isPending}
+            onClick={() => autogradeMutation.mutate()}
+          >
+            {autogradeMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Run auto-grade
+          </Button>
         </div>
       ) : null}
 
@@ -228,7 +268,9 @@ export function TeacherResultDetailPage() {
                           {isEssay ? (
                             <>
                               <span className="font-medium">Essay</span> ·{' '}
-                              {answer.points_earned === null ? 'Needs grading' : `${answer.points_earned}/${answer.points}`}
+                              {answer.points_earned === null
+                                ? 'Needs grading'
+                                : `${answer.points_earned}/${answer.points}${answer.auto_graded ? ' (auto)' : ''}`}
                             </>
                           ) : (
                             <>{answer.choice_id ? (answer.is_correct ? 'Correct' : 'Incorrect') : 'Unanswered'}</>
@@ -372,11 +414,22 @@ function EssayGradingBlock({
       <p className="text-xs text-muted-foreground">
         {words} word{words === 1 ? '' : 's'}
         {answer.graded_at ? ` · graded ${formatDateTime(answer.graded_at)}` : ' · not graded yet'}
+        {answer.auto_graded && answer.points_earned !== null ? ' · auto-graded (you can override below)' : ''}
       </p>
       {answer.model_answer ? (
         <p className="rounded-md border border-dashed px-3 py-2 text-sm">
           <span className="font-medium">Model answer (only you see this): </span>
           {answer.model_answer}
+        </p>
+      ) : null}
+      {(answer.essay_keywords ?? []).length > 0 ? (
+        <div className="rounded-md border border-dashed px-3 py-2 text-sm">
+          <span className="font-medium">Keywords (auto-graded from these): </span>
+          {(answer.essay_keywords ?? []).join('; ')}
+        </div>
+      ) : answer.points_earned === null ? (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+          This question has no keywords, so it cannot be auto-graded — add keywords in the question bank, then click “Run auto-grade”, or grade it manually below.
         </p>
       ) : null}
       <div className="grid gap-2 sm:grid-cols-[140px_1fr_auto]">

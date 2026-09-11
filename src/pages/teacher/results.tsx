@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Download, FileBarChart, ShieldAlert, TimerOff } from 'lucide-react'
+import { ArrowLeft, Download, FileBarChart, Loader2, RotateCcw, ShieldAlert, TimerOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { teacherApi } from '@/api/supabase-api'
 import { riskLevel } from '@/lib/risk'
@@ -17,6 +17,7 @@ import type { RiskScore } from '@/lib/types'
 
 export function TeacherResultsPage() {
   const { examId } = useParams<{ examId: string }>()
+  const queryClient = useQueryClient()
 
   const examQuery = useQuery({ queryKey: ['teacher-exam', examId], queryFn: () => teacherApi.exam(examId!), enabled: !!examId })
   const recordsQuery = useQuery({
@@ -28,6 +29,16 @@ export function TeacherResultsPage() {
     queryKey: ['teacher-results-risk', examId],
     queryFn: () => teacherApi.examRiskScores(examId!),
     enabled: !!examId,
+  })
+
+  const retakeMutation = useMutation({
+    mutationFn: ({ studentUserId, studentName }: { studentUserId: string; studentName: string }) =>
+      teacherApi.grantRetake(examId!, studentUserId).then((result) => ({ ...result, studentName })),
+    onSuccess: ({ retakes_allowed, studentName }) => {
+      toast.success(`Retake allowed for ${studentName} (${retakes_allowed} extra attempt${retakes_allowed === 1 ? '' : 's'} granted).`)
+      queryClient.invalidateQueries({ queryKey: ['teacher-results-records', examId] })
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Could not allow a retake.'),
   })
 
   const exportResults = async () => {
@@ -136,7 +147,11 @@ export function TeacherResultsPage() {
                       </TableCell>
                       <TableCell>
                         {record.score_percent !== null ? (
-                          <Badge variant={record.passed ? 'success' : 'destructive'}>{record.score_percent}%</Badge>
+                          record.passed === null ? (
+                            <Badge variant="warning">Pending</Badge>
+                          ) : (
+                            <Badge variant={record.passed ? 'success' : 'destructive'}>{record.score_percent}%</Badge>
+                          )
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
@@ -163,9 +178,28 @@ export function TeacherResultsPage() {
                         ) : null}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button asChild variant="ghost" size="sm">
-                          <Link to={`/teacher/exams/${exam.id}/results/${record.id}`}>Review</Link>
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          {finished ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Allow this student one more attempt"
+                              disabled={retakeMutation.isPending}
+                              onClick={() =>
+                                retakeMutation.mutate({
+                                  studentUserId: record.student_user_id,
+                                  studentName: record.student?.full_name ?? 'Student',
+                                })
+                              }
+                            >
+                              {retakeMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                              Allow retake
+                            </Button>
+                          ) : null}
+                          <Button asChild variant="ghost" size="sm">
+                            <Link to={`/teacher/exams/${exam.id}/results/${record.id}`}>Review</Link>
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   )

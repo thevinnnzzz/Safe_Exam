@@ -48,6 +48,8 @@ interface ParsedRow {
   model_answer: string
   min_words: string
   max_words: string
+  keywords: string
+  auto_grade: string
 }
 
 /** Normalized question ready for insert — shared by the CSV and TXT parsers. */
@@ -61,6 +63,8 @@ interface ImportRow {
   model_answer: string | null
   min_words: number
   max_words: number | null
+  essay_keywords: string[]
+  essay_autograde: boolean
   choices: { content: string; is_correct: boolean }[]
 }
 
@@ -74,10 +78,19 @@ function normalizeType(value: string | undefined): 'multiple_choice' | 'essay' {
   return v === 'essay' ? 'essay' : 'multiple_choice'
 }
 
+/** Keywords are semicolon-separated so phrases may contain commas. */
+function parseKeywords(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(';')
+    .map((k) => k.trim())
+    .filter(Boolean)
+}
+
 function csvRowToImport(row: ParsedRow): ImportRow {
   const questionType = normalizeType(row.type)
   const maxWords = Number(row.max_words) || 0
   if (questionType === 'essay') {
+    const keywords = parseKeywords(row.keywords)
     return {
       content: (row.question ?? '').trim(),
       difficulty: normalizeDifficulty(row.difficulty),
@@ -88,6 +101,8 @@ function csvRowToImport(row: ParsedRow): ImportRow {
       model_answer: (row.model_answer ?? '').trim() || null,
       min_words: Math.max(0, Number(row.min_words) || 0),
       max_words: maxWords > 0 ? maxWords : null,
+      essay_keywords: keywords,
+      essay_autograde: keywords.length > 0,
       choices: [],
     }
   }
@@ -105,12 +120,14 @@ function csvRowToImport(row: ParsedRow): ImportRow {
     model_answer: null,
     min_words: 0,
     max_words: null,
+    essay_keywords: [],
+    essay_autograde: false,
     choices: choices.map((content, i) => ({ content, is_correct: i === correctIndex })),
   }
 }
 
 const AIKEN_CHOICE_RE = /^(\*?)\s*([A-Fa-f])\s*[).:-]\s*(.+)$/
-const AIKEN_META_RE = /^(explanation|difficulty|category|points?|type|model answer|min words|max words)\s*[:-]\s*(.*)$/i
+const AIKEN_META_RE = /^(explanation|difficulty|category|points?|type|model answer|min words|max words|keywords|auto grade)\s*[:-]\s*(.*)$/i
 
 function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
   // Strip UTF-8 BOM and normalize Windows/mac line endings.
@@ -156,6 +173,7 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
     let modelAnswer: string | null = null
     let minWords = 0
     let maxWords: number | null = null
+    let keywords: string[] = []
     let expectedLetterIndex = 0
     let sawChoice = false
     let correctCount = 0
@@ -191,6 +209,8 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
         else if (key === 'model answer') modelAnswer = value || null
         else if (key === 'min words') minWords = Math.max(0, Number(value) || 0)
         else if (key === 'max words') maxWords = Number(value) > 0 ? Number(value) : null
+        else if (key === 'keywords') keywords = parseKeywords(value)
+        else if (key === 'auto grade') { /* legacy flag, ignored: keywords alone enable auto-grading */ }
         else points = Math.max(1, Number(value) || 1)
         continue
       }
@@ -219,6 +239,8 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
         model_answer: modelAnswer,
         min_words: minWords,
         max_words: maxWords,
+        essay_keywords: keywords,
+        essay_autograde: keywords.length > 0,
         choices: [],
       })
       return
@@ -246,6 +268,8 @@ function parseAiken(text: string): { rows: ImportRow[]; errors: string[] } {
       model_answer: null,
       min_words: 0,
       max_words: null,
+      essay_keywords: [],
+      essay_autograde: false,
       choices,
     })
   })
@@ -262,10 +286,10 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
 
   const downloadCsvTemplate = () => {
     downloadCSV('questions-template.csv', [
-      ['question', 'type', 'choice_a', 'choice_b', 'choice_c', 'choice_d', 'correct', 'difficulty', 'category', 'points', 'explanation', 'model_answer', 'min_words', 'max_words'],
-      ['What is the capital of France?', 'multiple_choice', 'Berlin', 'Madrid', 'Paris', 'Rome', 'C', 'easy', 'Geography', '1', 'Paris is the capital of France.', '', '', ''],
-      ['2 + 2 = ?', 'multiple_choice', '3', '4', '5', '6', 'B', 'easy', 'Math', '1', 'Two plus two equals four.', '', '', ''],
-      ['Explain the causes of World War I.', 'essay', '', '', '', '', '', 'medium', 'History', '10', '', 'Militarism, alliances, imperialism, nationalism.', '100', '500'],
+      ['question', 'type', 'choice_a', 'choice_b', 'choice_c', 'choice_d', 'correct', 'difficulty', 'category', 'points', 'explanation', 'model_answer', 'min_words', 'max_words', 'keywords', 'auto_grade'],
+      ['What is the capital of France?', 'multiple_choice', 'Berlin', 'Madrid', 'Paris', 'Rome', 'C', 'easy', 'Geography', '1', 'Paris is the capital of France.', '', '', '', '', ''],
+      ['2 + 2 = ?', 'multiple_choice', '3', '4', '5', '6', 'B', 'easy', 'Math', '1', 'Two plus two equals four.', '', '', '', '', ''],
+      ['Explain the causes of World War I.', 'essay', '', '', '', '', '', 'medium', 'History', '10', '', 'Militarism, alliances, imperialism, nationalism.', '100', '500', 'militarism; alliances; imperialism; nationalism', 'yes'],
     ])
   }
 
@@ -295,11 +319,13 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
         '#        Model answer: <reference answer, essay only, teachers only>',
         '#        Min words:   <number, essay only>   (default: 0 = no minimum)',
         '#        Max words:   <number, essay only>   (default: no maximum)',
+        '#        Keywords:    <kw1; kw2; key phrase, essay only, ;-separated — enables auto-grading>',
+        '#        Auto grade:  legacy flag, ignored (keywords alone enable auto-grading)',
         '#   7. Lines starting with # are comments and are ignored on import.',
         '#      You can keep or delete this header — it will not be imported.',
         '#',
         '# Prefer a spreadsheet? Import a .csv instead with columns:',
-        '#   question,type,choice_a,choice_b,choice_c,choice_d,correct,difficulty,category,points,explanation,model_answer,min_words,max_words',
+        '#   question,type,choice_a,choice_b,choice_c,choice_d,correct,difficulty,category,points,explanation,model_answer,min_words,max_words,keywords,auto_grade',
         '# ==================================================================',
         '',
         'What is the capital of France?',
@@ -354,6 +380,8 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
         'Min words: 100',
         'Max words: 500',
         'Model answer: Militarism, alliances, imperialism, and nationalism.',
+        'Keywords: militarism; alliances; imperialism; nationalism',
+        'Auto grade: yes',
         'Explanation: Look for the four MAIN causes with examples.',
         '',
         'Do you agree that social media does more harm than good? Justify your answer.',
@@ -439,6 +467,8 @@ export function CsvImportDialog({ open, onOpenChange, bankId, onImported }: CsvI
           model_answer: row.model_answer,
           min_words: row.min_words,
           max_words: row.max_words,
+          essay_keywords: row.essay_keywords,
+          essay_autograde: row.essay_autograde,
         })
         ok += 1
       }

@@ -19,9 +19,9 @@ import { studentApi } from '@/api/supabase-api'
 import { useProctoring, IDLE_TIMEOUT_MS } from '@/hooks/use-proctoring'
 import { useAuth } from '@/hooks/use-auth'
 import { SESSION_TAKEN_MESSAGE, isSessionTakenError } from '@/lib/auth'
-import type { ExamQuestionPublic, StudentExam } from '@/lib/types'
+import type { ExamQuestionPublic, RiskLevel, StudentExam } from '@/lib/types'
 import { countWords } from '@/lib/types'
-import { EVENT_LABELS } from '@/lib/risk'
+import { EVENT_LABELS, EVENT_POINTS, riskLevel } from '@/lib/risk'
 import { formatClock } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,7 @@ import { ConfirmDialog } from '@/components/common/confirm-dialog'
 import { RiskBadge } from '@/components/common/risk-badge'
 import { QuestionPalette } from '@/components/features/student/question-palette'
 import { AnswerOption } from '@/components/features/student/answer-option'
+import { ViolationModal } from '@/components/features/student/violation-modal'
 
 type Phase = 'loading' | 'instructions' | 'starting' | 'taking' | 'locked' | 'submitting'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -59,6 +60,28 @@ export function StudentExamPage() {
   })
   const exam = examQuery.data
 
+  // Retake lock state (mirrors the fn_start_exam gate): a finished attempt
+  // with no granted retakes remaining shows a locked notice instead of Begin.
+  const availableQuery = useQuery({
+    queryKey: ['student-available-exams'],
+    queryFn: () => studentApi.availableExams(),
+    enabled: !!examId,
+    retry: 1,
+  })
+  const attemptsQuery = useQuery({
+    queryKey: ['student-attempts'],
+    queryFn: () => studentApi.myExamAttempts(),
+    enabled: !!examId,
+    retry: 1,
+  })
+  const finishedAttempts = (attemptsQuery.data ?? []).filter(
+    (a) => a.exam_id === examId && (a.status === 'submitted' || a.status === 'time_up'),
+  )
+  const totalAttempts = (attemptsQuery.data ?? []).filter((a) => a.exam_id === examId).length
+  const retakeLocked =
+    finishedAttempts.length > 0 &&
+    totalAttempts >= 1 + ((availableQuery.data ?? []).find((e) => e.id === examId)?.retakes_allowed ?? 0)
+
   const [phase, setPhase] = useState<Phase>('loading')
   const [se, setSe] = useState<StudentExam | null>(null)
   const [questions, setQuestions] = useState<ExamQuestionPublic[]>([])
@@ -68,6 +91,7 @@ export function StudentExamPage() {
   const [remainingSeconds, setRemainingSeconds] = useState(0)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [confirmSubmit, setConfirmSubmit] = useState(false)
+  const [violation, setViolation] = useState<{ eventType: string; points: number; total: number; level: RiskLevel } | null>(null)
 
   const answersRef = useRef(answers)
   const currentIndexRef = useRef(0)
@@ -79,6 +103,7 @@ export function StudentExamPage() {
   const progressTimerRef = useRef<number | null>(null)
   const essayTimerRef = useRef<number | null>(null)
   const autoResumedRef = useRef(false)
+  const proctorRef = useRef<ReturnType<typeof useProctoring> | null>(null)
 
   const proctor = useProctoring(se?.id ?? null, {
     enabled: phase === 'taking' || phase === 'locked',
@@ -88,6 +113,12 @@ export function StudentExamPage() {
           description: 'This incident was recorded and added to your risk score.',
         })
       }
+      // Blocking modal for every tracked event; a newer violation replaces
+      // the open one instead of stacking. Totals are snapshotted here because
+      // proctor state lags one render behind the just-recorded event.
+      const points = EVENT_POINTS[eventType as keyof typeof EVENT_POINTS] ?? 0
+      const total = (proctorRef.current?.risk ?? 0) + points
+      setViolation({ eventType, points, total, level: riskLevel(total) })
     },
   })
 
@@ -97,7 +128,6 @@ export function StudentExamPage() {
 
   const seRef = useRef(se)
   seRef.current = se
-  const proctorRef = useRef(proctor)
   proctorRef.current = proctor
 
   // Reset proctoring when a new session loads.
@@ -329,7 +359,7 @@ export function StudentExamPage() {
       const current = seRef.current
       if (current && !submittedRef.current) {
         void studentApi.updateProgress(current.id, { is_online: false }).catch(() => {})
-        void proctorRef.current.flush()
+        void proctorRef.current?.flush()
       }
     }
   }, [])
@@ -487,6 +517,27 @@ export function StudentExamPage() {
                   </Button>
                 </div>
               </div>
+            ) : retakeLocked ? (
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm">
+                <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                <div>
+                  <p className="font-semibold">No retakes remaining</p>
+                  <p className="mt-1 text-muted-foreground">
+                    You have already submitted this exam. Ask your instructor to allow another attempt if you need to retake it.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => navigate('/student')}>
+                      <ArrowLeft className="h-4 w-4" />
+                      Back to dashboard
+                    </Button>
+                    {finishedAttempts[0] ? (
+                      <Button variant="outline" size="sm" onClick={() => navigate(`/student/result/${finishedAttempts[0].id}`)}>
+                        View result
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
             ) : (
               <Button size="lg" className="w-full" onClick={beginExam} disabled={phase === 'starting'}>
                 {phase === 'starting' ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -511,7 +562,14 @@ export function StudentExamPage() {
         : ''
 
   return (
-    <div className="mx-auto max-w-6xl animate-fade-in">
+    <div className="mx-auto max-w-6xl animate-fade-in select-none [&_input]:select-text [&_textarea]:select-text">
+      <ViolationModal
+        violation={violation}
+        level={violation?.level ?? proctor.level}
+        totalPoints={violation?.total ?? proctor.risk}
+        open={violation !== null}
+        onAcknowledge={() => setViolation(null)}
+      />
       {fullscreenSupported && !proctor.isFullscreen && phase === 'taking' ? (
         <div className="mb-4 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:bg-amber-500/10 dark:text-amber-300">
           <p className="flex items-center gap-2">

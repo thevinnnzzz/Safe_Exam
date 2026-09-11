@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { studentApi } from '@/api/supabase-api'
+import { useAttemptRealtime } from '@/hooks/use-realtime'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +33,7 @@ interface ResultAnswer {
   answer_text: string | null
   feedback: string | null
   graded_at: string | null
+  auto_graded?: boolean
   is_correct: boolean | null
   points_earned: number | null
   time_spent_seconds: number
@@ -76,13 +78,26 @@ export function StudentResultPage() {
     retry: 1,
   })
 
+  // Live grade updates (teacher grading lands without refresh).
+  useAttemptRealtime(studentExamId ?? null)
+
   if (resultQuery.isLoading) return <PageLoader />
   if (resultQuery.isError || !resultQuery.data) {
+    const hidden =
+      resultQuery.error instanceof Error && /HISTORY_HIDDEN|hidden/i.test(resultQuery.error.message)
     return (
       <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3 text-center">
-        <ShieldAlert className="h-10 w-10 text-destructive" />
-        <p className="font-semibold">Result not available</p>
-        <Button onClick={() => navigate('/student')}>Back to dashboard</Button>
+        <ShieldAlert className="h-10 w-10 text-muted-foreground" />
+        <p className="font-semibold">{hidden ? 'History hidden' : 'Result not available'}</p>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          {hidden
+            ? 'Your instructor has hidden the history for this exam, so it cannot be reviewed right now.'
+            : 'This result could not be loaded. It may not exist or is no longer available.'}
+        </p>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => navigate('/student/history')}>View history</Button>
+          <Button onClick={() => navigate('/student')}>Back to dashboard</Button>
+        </div>
       </div>
     )
   }
@@ -92,6 +107,9 @@ export function StudentResultPage() {
   const revealAnswers = exam.allow_review
   const gradingPending = student_exam.grading_status === 'pending'
   const pendingEssays = answers.filter((a) => (a.question_type ?? 'multiple_choice') === 'essay' && a.points_earned === null).length
+  const autoGradedEssays = answers.filter(
+    (a) => (a.question_type ?? 'multiple_choice') === 'essay' && a.auto_graded && a.points_earned !== null,
+  )
 
   return (
     <div className="mx-auto max-w-4xl animate-fade-in space-y-6">
@@ -105,11 +123,18 @@ export function StudentResultPage() {
             {student_exam.attempt_number && student_exam.attempt_number > 1 ? `Attempt ${student_exam.attempt_number} · ` : ''}
             Submitted {student_exam.submitted_at ? new Date(student_exam.submitted_at).toLocaleString() : '—'}
             {gradingPending ? ' · Some essays are still being graded' : ''}
+            {!gradingPending && autoGradedEssays.length > 0 ? ' · Essay scores are auto-graded and subject to review' : ''}
           </p>
         </div>
         {gradingPending && showScore ? (
           <div className="border-b bg-amber-50 px-6 py-3 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
             Your score below is partial — {pendingEssays} essay{pendingEssays === 1 ? '' : 's'} still {pendingEssays === 1 ? 'needs' : 'need'} manual grading by your instructor.
+          </div>
+        ) : null}
+        {!gradingPending && autoGradedEssays.length > 0 && showScore ? (
+          <div className="border-b bg-sky-50 px-6 py-3 text-sm text-sky-900 dark:bg-sky-500/10 dark:text-sky-300">
+            Your essay score{autoGradedEssays.length === 1 ? ' was' : 's were'} graded automatically by keyword matching — this is provisional.
+            Your instructor will still review your {autoGradedEssays.length === 1 ? 'answer' : 'answers'} and may adjust your score, so this result is not final.
           </div>
         ) : null}
         <CardContent className="p-6">
@@ -121,11 +146,25 @@ export function StudentResultPage() {
               hint={showScore ? `${student_exam.score ?? 0} points` : 'Hidden by instructor'}
             />
             <ResultTile
-              icon={CheckCircle2}
+              icon={gradingPending ? Clock3 : CheckCircle2}
               label="Result"
-              value={showScore ? (student_exam.passed ? 'Passed' : 'Failed') : '—'}
-              hint={showScore ? `Passing: ${exam.passing_score}%` : undefined}
-              accent={student_exam.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}
+              value={showScore ? (gradingPending ? 'Pending review' : student_exam.passed ? 'Passed' : 'Failed') : '—'}
+              hint={
+                showScore
+                  ? gradingPending
+                    ? 'Your instructor is still grading the essay part'
+                    : autoGradedEssays.length > 0
+                      ? 'Auto-graded only — instructor review pending'
+                      : `Passing: ${exam.passing_score}%`
+                  : undefined
+              }
+              accent={
+                gradingPending
+                  ? 'text-amber-600 dark:text-amber-400'
+                  : student_exam.passed
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-rose-600 dark:text-rose-400'
+              }
             />
             <ResultTile
               icon={Clock3}
@@ -186,7 +225,7 @@ export function StudentResultPage() {
                         {isEssay
                           ? essayPending
                             ? 'Awaiting grading'
-                            : `Graded: ${answer.points_earned}/${answer.points}`
+                            : `Graded: ${answer.points_earned}/${answer.points}${answer.auto_graded ? ' (auto)' : ''}`
                           : answeredCorrectly ? 'Correct' : answer.choice_id ? 'Incorrect' : 'Unanswered'}
                         {!isEssay && typeof answer.points_earned === 'number' ? ` · ${answer.points_earned}/${answer.points} pts` : ''}
                       </p>
@@ -209,6 +248,11 @@ export function StudentResultPage() {
                             <p className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:bg-sky-500/10 dark:text-sky-300">
                               <span className="font-medium">Instructor feedback: </span>
                               {answer.feedback}
+                            </p>
+                          ) : null}
+                          {!essayPending && answer.auto_graded ? (
+                            <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                              This score was graded automatically and is provisional — your instructor may still review it and adjust your grade.
                             </p>
                           ) : null}
                         </>

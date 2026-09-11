@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,9 +80,15 @@ export function TeacherExamsPage() {
   const [targetSearch, setTargetSearch] = useState('')
   const [targetCourse, setTargetCourse] = useState('')
   const [targetSection, setTargetSection] = useState('')
+  const [historySection, setHistorySection] = useState('all')
   const queryClient = useQueryClient()
 
   const examsQuery = useQuery({ queryKey: ['teacher-exams'], queryFn: () => teacherApi.exams() })
+
+  const sectionMapQuery = useQuery({
+    queryKey: ['teacher-exam-sections'],
+    queryFn: () => teacherApi.examAssignedSections(),
+  })
 
   const countsQuery = useQuery({
     queryKey: ['teacher-exam-question-counts'],
@@ -171,6 +178,15 @@ export function TeacherExamsPage() {
     onError: () => toast.error('Could not update the exam.'),
   })
 
+  const historyMutation = useMutation({
+    mutationFn: ({ id, allow }: { id: string; allow: boolean }) => teacherApi.updateExam(id, { allow_history: allow }),
+    onSuccess: (_, { allow }) => {
+      queryClient.invalidateQueries({ queryKey: ['teacher-exams'] })
+      toast.success(allow ? 'Exam will show in student history' : 'Exam hidden from student history')
+    },
+    onError: (err) => toast.error(err instanceof Error ? `Could not update history visibility: ${err.message}` : 'Could not update history visibility.'),
+  })
+
   const republishMutation = useMutation({
     mutationFn: ({ id, startTime, endTime, studentIds }: { id: string; startTime: string | null; endTime: string | null; studentIds: string[] }) =>
       teacherApi.updateExam(id, { start_time: startTime, end_time: endTime }).then(() => teacherApi.setExamStudents(id, studentIds)),
@@ -199,6 +215,19 @@ export function TeacherExamsPage() {
     }
     publishMutation.mutate({ id: exam.id, publish: true })
   }
+
+  // NOTE: all hooks must run before any early return (Rules of Hooks).
+  const sectionsByExam = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const row of sectionMapQuery.data ?? []) map.set(row.exam_id, row.sections ?? [])
+    return map
+  }, [sectionMapQuery.data])
+
+  const displayedExams = useMemo(() => {
+    const list = examsQuery.data ?? []
+    if (historySection === 'all') return list
+    return list.filter((exam) => (sectionsByExam.get(exam.id) ?? []).includes(historySection))
+  }, [examsQuery.data, historySection, sectionsByExam])
 
   if (examsQuery.isLoading) return <PageLoader />
 
@@ -252,6 +281,39 @@ export function TeacherExamsPage() {
           }
         />
       ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-muted-foreground">Section:</span>
+            <Select value={historySection} onValueChange={setHistorySection}>
+              <SelectTrigger className="h-9 w-48">
+                <SelectValue placeholder="All sections" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sections</SelectItem>
+                {sections.map((section) => (
+                  <SelectItem key={section} value={section}>
+                    {section}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {historySection !== 'all' ? (
+              <span className="text-xs text-muted-foreground">
+                Showing {displayedExams.length} exam{displayedExams.length === 1 ? '' : 's'} assigned to section {historySection} — toggle History per exam below.
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                Pick a section to focus, then toggle per-exam student-history visibility.
+              </span>
+            )}
+          </div>
+          {displayedExams.length === 0 ? (
+            <EmptyState
+              icon={ClipboardList}
+              title="No exams for this section"
+              description={`None of your exams are assigned to students in section ${historySection}.`}
+            />
+          ) : (
         <Card>
           <CardContent className="p-0">
             <Table>
@@ -265,11 +327,12 @@ export function TeacherExamsPage() {
                   <TableHead>Duration</TableHead>
                   <TableHead className="text-center">Submitted</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="text-center">History</TableHead>
                   <TableHead className="w-12 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {exams.map((exam) => {
+                {displayedExams.map((exam) => {
                   const examSubmissions = byExam.get(exam.id) ?? []
                   const isExpanded = expanded === exam.id
                   return (
@@ -330,6 +393,19 @@ export function TeacherExamsPage() {
                         <TableCell>
                           <ExamStatusBadge status={exam.status} />
                         </TableCell>
+                        <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-col items-center gap-1">
+                            <Switch
+                              aria-label={`Show ${exam.title} in student history`}
+                              checked={exam.allow_history ?? true}
+                              disabled={historyMutation.isPending}
+                              onCheckedChange={(v) => historyMutation.mutate({ id: exam.id, allow: v })}
+                            />
+                            <span className="text-[11px] text-muted-foreground">
+                              {(exam.allow_history ?? true) ? 'Shown' : 'Hidden'}
+                            </span>
+                          </div>
+                        </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -372,7 +448,7 @@ export function TeacherExamsPage() {
 
                       {isExpanded && examSubmissions.length > 0 ? (
                         <TableRow key={`${exam.id}-scores`}>
-                          <TableCell colSpan={9} className="bg-muted/40 p-0">
+                          <TableCell colSpan={10} className="bg-muted/40 p-0">
                             <div className="p-4">
                               <div className="mb-3 flex items-center justify-between">
                                 <p className="text-sm font-medium">Live scores</p>
@@ -405,7 +481,11 @@ export function TeacherExamsPage() {
                                         <TableCell className="text-center font-semibold">{s.score ?? '—'}</TableCell>
                                         <TableCell className="text-center">
                                           {s.score_percent !== null ? (
-                                            <Badge variant={s.passed ? 'success' : 'destructive'}>{s.score_percent}%</Badge>
+                                            s.passed === null ? (
+                                              <Badge variant="warning">Pending</Badge>
+                                            ) : (
+                                              <Badge variant={s.passed ? 'success' : 'destructive'}>{s.score_percent}%</Badge>
+                                            )
                                           ) : (
                                             <span className="text-muted-foreground">—</span>
                                           )}
@@ -452,6 +532,8 @@ export function TeacherExamsPage() {
             </Table>
           </CardContent>
         </Card>
+          )}
+        </>
       )}
 
       <ConfirmDialog

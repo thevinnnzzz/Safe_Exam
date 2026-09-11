@@ -25,6 +25,7 @@ const questionSchema = z
     model_answer: z.string().optional(),
     min_words: z.coerce.number().min(0).max(10000).optional(),
     max_words: z.coerce.number().min(0).max(10000).optional(),
+    essay_keywords: z.string().optional(),
   })
   .superRefine((values, ctx) => {
     if (values.question_type === 'multiple_choice') {
@@ -54,6 +55,7 @@ export interface QuestionFormData {
   model_answer: string | null
   min_words: number
   max_words: number | null
+  essay_keywords: string[]
   choices: { content: string; is_correct: boolean }[]
 }
 
@@ -89,6 +91,7 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
       model_answer: '',
       min_words: 0,
       max_words: 0,
+      essay_keywords: '',
     },
   })
 
@@ -106,6 +109,7 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
         model_answer: initial?.model_answer ?? '',
         min_words: initial?.min_words ?? 0,
         max_words: initial?.max_words ?? 0,
+        essay_keywords: (initial?.essay_keywords ?? []).join('\n'),
       })
     }
   }, [open, initial, reset])
@@ -116,6 +120,10 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
 
   const onSubmit = async (values: QuestionFormValues) => {
     try {
+      const keywords =
+        values.question_type === 'essay'
+          ? (values.essay_keywords ?? '').split('\n').map((k) => k.trim()).filter(Boolean)
+          : []
       const base = {
         content: values.content,
         difficulty: values.difficulty,
@@ -126,6 +134,7 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
         model_answer: values.question_type === 'essay' ? values.model_answer || null : null,
         min_words: values.question_type === 'essay' ? (values.min_words ?? 0) : 0,
         max_words: values.question_type === 'essay' && (values.max_words ?? 0) > 0 ? (values.max_words as number) : null,
+        essay_keywords: keywords,
       }
       if (editing && initial?.id) {
         await teacherApi.updateQuestion(initial.id, base)
@@ -157,11 +166,11 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit question' : 'Add question'}</DialogTitle>
-          <DialogDescription>
-            {questionType === 'essay'
-              ? 'Essay questions are answered with free text and graded manually by you.'
-              : 'Multiple choice questions must have exactly four choices.'}
-          </DialogDescription>
+            <DialogDescription>
+              {questionType === 'essay'
+                ? 'Essay questions are answered with free text — graded manually, or automatically from keywords.'
+                : 'Multiple choice questions must have exactly four choices.'}
+            </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -173,7 +182,7 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="multiple_choice">Multiple choice (auto-graded)</SelectItem>
-                <SelectItem value="essay">Essay (manually graded)</SelectItem>
+                <SelectItem value="essay">Essay (manual or keyword auto-grade)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -271,6 +280,18 @@ export function QuestionFormDialog({ open, onOpenChange, bankId, initial, onSave
                 <Label htmlFor="q-model">Model answer (teachers only)</Label>
                 <Textarea id="q-model" rows={3} placeholder="Reference answer to guide manual grading…" {...register('model_answer')} />
                 <p className="text-xs text-muted-foreground">Never shown to students. Visible to you when grading.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="q-keywords">Keywords / key phrases (one per line)</Label>
+                <Textarea
+                  id="q-keywords"
+                  rows={3}
+                  placeholder={'militarism\nalliances\niron oxide'}
+                  {...register('essay_keywords')}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Each line counts equally toward the points and answers are auto-graded from them at submit. Exact matches always count; close spellings count too. Leave empty for manual-only grading — you can still override any auto-grade later.
+                </p>
               </div>
             </div>
           )}

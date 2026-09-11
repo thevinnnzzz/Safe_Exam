@@ -11,15 +11,30 @@ import type {
   UserProfile,
 } from '@/lib/types'
 
+/**
+ * PostgREST errors arrive as plain objects ({ message, details, hint, code }),
+ * NOT Error instances — so `err instanceof Error` checks and SESSION_TAKEN /
+ * HISTORY_HIDDEN message matching silently failed everywhere. Normalize to a
+ * real Error carrying the backend's message.
+ */
+export function toError(error: unknown, fallback: string): Error {
+  if (error instanceof Error) return error
+  const err = error as { message?: unknown; details?: unknown; hint?: unknown } | null | undefined
+  const message = [err?.message, err?.details, err?.hint]
+    .filter((part): part is string => typeof part === 'string' && part.length > 0)
+    .join(' — ')
+  return new Error(message || fallback)
+}
+
 async function rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
   const { data, error } = await getSupabase().rpc(fn, args)
-  if (error) throw error
+  if (error) throw toError(error, `Request ${fn} failed.`)
   return data as T
 }
 
 async function single<T>(query: PromiseLike<{ data: T | null; error: unknown }>): Promise<T> {
   const { data, error } = await query
-  if (error) throw error
+  if (error) throw toError(error, 'Request failed.')
   if (!data) throw new Error('Record not found')
   return data
 }
@@ -43,10 +58,13 @@ export const studentApi = {
     const userId = getStoredUser()?.id
     const { data: access, error: accessError } = await getSupabase()
       .from('exam_access')
-      .select('exam_id')
+      .select('exam_id, retakes_allowed')
       .eq('student_user_id', userId ?? '')
-    if (accessError) throw accessError
+    if (accessError) throw toError(accessError, 'Request failed.')
     const ids = (access ?? []).map((row) => row.exam_id)
+    const retakesByExam = new Map<string, number>(
+      (access ?? []).map((row) => [row.exam_id as string, (row.retakes_allowed as number | null) ?? 0]),
+    )
     if (ids.length === 0) return []
     const { data, error } = await getSupabase()
       .from('exams')
@@ -54,20 +72,41 @@ export const studentApi = {
       .eq('status', 'published')
       .in('id', ids)
       .order('created_at', { ascending: false })
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => ({
       ...row,
       course_name: (row.course as unknown as { name?: string } | null | undefined)?.name ?? null,
+      retakes_allowed: retakesByExam.get((row as { id: string }).id) ?? 0,
     })) as unknown as Exam[]
   },
 
   async myExamAttempts(): Promise<StudentExam[]> {
-    const { data, error } = await getSupabase()
-      .from('student_exams')
-      .select('id, exam_id, student_user_id, attempt_number, status, started_at, submitted_at, time_used_seconds, score, score_percent, passed, risk_score, is_online, last_active_at, exam:exams(id, title)')
-      .order('updated_at', { ascending: false })
-    if (error) throw error
-    return (data ?? []).map((row) => ({ ...row, exam: row.exam ?? undefined })) as unknown as StudentExam[]
+    const normalize = (rows: unknown) =>
+      ((rows ?? []) as unknown[]).map((row) => {
+        const r = row as Record<string, unknown> & { exam?: unknown }
+        return { ...r, exam: r.exam ?? undefined }
+      }) as unknown as StudentExam[]
+    try {
+      const { data, error } = await getSupabase()
+        .from('student_exams')
+        .select('id, exam_id, student_user_id, attempt_number, status, started_at, submitted_at, time_used_seconds, score, score_percent, passed, risk_score, is_online, last_active_at, exam:exams(id, title, allow_history, show_score_after, allow_review)')
+        .order('updated_at', { ascending: false })
+      if (error) throw toError(error, 'Request failed.')
+      return normalize(data)
+    } catch (err) {
+      // Graceful degradation: if the DB predates newer migrations (missing
+      // exams.allow_history or student_exams.updated_at columns), fall back
+      // to the legacy shape/ordering instead of breaking history/dashboard
+      // entirely. Missing flags default to visible, matching old behavior.
+      const message = err instanceof Error ? err.message : ''
+      if (!/allow_history|show_score_after|allow_review|updated_at/i.test(message)) throw err
+      const { data, error } = await getSupabase()
+        .from('student_exams')
+        .select('id, exam_id, student_user_id, attempt_number, status, started_at, submitted_at, time_used_seconds, score, score_percent, passed, risk_score, is_online, last_active_at, exam:exams(id, title)')
+        .order('started_at', { ascending: false })
+      if (error) throw toError(error, 'Request failed.')
+      return normalize(data)
+    }
   },
 
   async startExam(examId: string): Promise<StudentExam> {
@@ -132,7 +171,7 @@ export const studentApi = {
       .eq('student_exam_id', studentExamId)
       .order('created_at', { ascending: false })
       .limit(100)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as ActivityLog[]
   },
 
@@ -141,13 +180,13 @@ export const studentApi = {
       .from('student_answers')
       .select('question_id, choice_id, answer_text, time_spent_seconds')
       .eq('student_exam_id', studentExamId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as Pick<StudentAnswer, 'question_id' | 'choice_id' | 'answer_text' | 'time_spent_seconds'>[]
   },
 
   async exam(id: string): Promise<Exam> {
     const { data, error } = await getSupabase().from('exams').select('*').eq('id', id).maybeSingle()
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     if (!data) throw new Error('Exam not found')
     return data as Exam
   },
@@ -160,7 +199,7 @@ export const studentApi = {
 export const teacherApi = {
   async courses(): Promise<Course[]> {
     const { data, error } = await getSupabase().from('courses').select('*').order('name')
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as Course[]
   },
 
@@ -178,15 +217,15 @@ export const teacherApi = {
 
   async deleteCourse(id: string) {
     const { error } = await getSupabase().from('courses').delete().eq('id', id)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async exams(): Promise<Exam[]> {
     const { data, error } = await getSupabase()
       .from('exams')
-      .select('id, title, description, course_id, status, start_time, end_time, duration_minutes, passing_score, assigned_count:exam_access(count), course:courses(name)')
+      .select('id, title, description, course_id, status, start_time, end_time, duration_minutes, passing_score, allow_history, assigned_count:exam_access(count), course:courses(name)')
       .order('created_at', { ascending: false })
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => ({
       ...row,
       course_name: (row.course as unknown as { name?: string } | null | undefined)?.name ?? null,
@@ -212,12 +251,12 @@ export const teacherApi = {
 
   async updateExam(id: string, patch: Partial<Exam>) {
     const { error } = await getSupabase().from('exams').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async deleteExam(id: string) {
     const { error } = await getSupabase().from('exams').delete().eq('id', id)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async publishExam(id: string, publish: boolean) {
@@ -225,7 +264,7 @@ export const teacherApi = {
       .from('exams')
       .update({ status: publish ? 'published' : 'draft', published_at: publish ? new Date().toISOString() : null })
       .eq('id', id)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async examDetail(id: string) {
@@ -237,7 +276,7 @@ export const teacherApi = {
       .from('question_bank')
       .select('*, question_count:questions(count)')
       .order('created_at', { ascending: false })
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => ({
       ...row,
       question_count: Array.isArray(row.question_count) ? (row.question_count[0]?.count ?? 0) : 0,
@@ -252,7 +291,7 @@ export const teacherApi = {
 
   async deleteBank(id: string) {
     const { error } = await getSupabase().from('question_bank').delete().eq('id', id)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async bankQuestions(bankId: string) {
@@ -264,7 +303,7 @@ export const teacherApi = {
       .from('questions')
       .select('question_bank_id')
       .not('question_bank_id', 'is', null)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     const counts: Record<string, number> = {}
     for (const row of data ?? []) {
       const key = row.question_bank_id
@@ -275,12 +314,12 @@ export const teacherApi = {
 
   async createQuestion(
     bankId: string | null,
-    q: { content: string; difficulty: string; category: string | null; points: number; explanation: string | null; choices: { content: string; is_correct: boolean }[]; question_type?: string; model_answer?: string | null; min_words?: number; max_words?: number | null },
+    q: { content: string; difficulty: string; category: string | null; points: number; explanation: string | null; choices: { content: string; is_correct: boolean }[]; question_type?: string; model_answer?: string | null; min_words?: number; max_words?: number | null; essay_keywords?: string[]; essay_autograde?: boolean },
   ) {
     const questionType = q.question_type ?? 'multiple_choice'
     const { data: question, error: qError } = await getSupabase()
       .from('questions')
-      .insert({ question_bank_id: bankId, teacher_id: getStoredUser()?.id, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation, question_type: questionType, model_answer: q.model_answer ?? null, min_words: q.min_words ?? 0, max_words: q.max_words ?? null })
+      .insert({ question_bank_id: bankId, teacher_id: getStoredUser()?.id, content: q.content, difficulty: q.difficulty, category: q.category, points: q.points, explanation: q.explanation, question_type: questionType, model_answer: q.model_answer ?? null, min_words: q.min_words ?? 0, max_words: q.max_words ?? null, essay_keywords: q.essay_keywords ?? [], essay_autograde: q.essay_autograde ?? false })
       .select()
       .single()
     if (qError) throw qError
@@ -293,9 +332,9 @@ export const teacherApi = {
     return question
   },
 
-  async updateQuestion(questionId: string, patch: Partial<{ content: string; difficulty: string; category: string | null; points: number; explanation: string | null; question_type: string; model_answer: string | null; min_words: number; max_words: number | null }>) {
+  async updateQuestion(questionId: string, patch: Partial<{ content: string; difficulty: string; category: string | null; points: number; explanation: string | null; question_type: string; model_answer: string | null; min_words: number; max_words: number | null; essay_keywords: string[]; essay_autograde: boolean }>) {
     const { error } = await getSupabase().from('questions').update(patch).eq('id', questionId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async replaceChoices(questionId: string, choices: { content: string; is_correct: boolean }[]) {
@@ -309,12 +348,12 @@ export const teacherApi = {
 
   async deleteQuestion(questionId: string) {
     const { error } = await getSupabase().from('questions').delete().eq('id', questionId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
   },
 
   async examQuestions(examId: string): Promise<{ question_id: string; points: number }[]> {
     const { data, error } = await getSupabase().from('exam_questions').select('question_id, points').eq('exam_id', examId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as { question_id: string; points: number }[]
   },
 
@@ -335,7 +374,7 @@ export const teacherApi = {
       .select('*, student:users(id, full_name, student_id)')
       .eq('exam_id', examId)
       .order('last_active_at', { ascending: false })
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => ({ ...row, student: row.student ?? null })) as unknown as StudentExam[]
   },
 
@@ -344,7 +383,7 @@ export const teacherApi = {
       .from('exam_access')
       .select('student_user_id, users(id, full_name, student_id, students(course_id, section, courses(name)))')
       .eq('exam_id', examId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     const result: UserProfile[] = []
     for (const row of data ?? []) {
       const user = Array.isArray(row.users) ? row.users[0] : (row.users as Record<string, unknown> | null)
@@ -368,7 +407,7 @@ export const teacherApi = {
 
   async examRiskScores(examId: string): Promise<RiskScore[]> {
     const { data, error } = await getSupabase().from('risk_scores').select('*').eq('exam_id', examId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as RiskScore[]
   },
 
@@ -379,14 +418,14 @@ export const teacherApi = {
       .eq('exam_id', examId)
       .order('created_at', { ascending: false })
       .limit(limit)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as ActivityLog[]
   },
 
   async questionBatch(questionIds: string[]): Promise<{ id: string; content: string }[]> {
     if (questionIds.length === 0) return []
     const { data, error } = await getSupabase().from('questions').select('id, content').in('id', questionIds)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []) as { id: string; content: string }[]
   },
 
@@ -396,7 +435,7 @@ export const teacherApi = {
       .select('id, full_name, student_id, email, students(course_id, section, courses(name))')
       .eq('role_id', '00000000-0000-0000-0000-000000000001')
       .order('full_name')
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => {
       const student = (Array.isArray(row.students) ? row.students[0] : row.students) as { course_id?: string | null; section?: string | null; courses?: { name?: string }[] | { name?: string } | null } | undefined
       const course = student?.courses
@@ -432,7 +471,7 @@ export const teacherApi = {
       .from('exam_access')
       .select('exam_id')
       .eq('student_user_id', studentUserId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     const all = (data ?? []).map((row) => row.exam_id)
     if (!teacherId) return all
     const { data: owned, error: ownErr } = await getSupabase().from('exams').select('id').eq('teacher_id', teacherId)
@@ -458,14 +497,31 @@ export const teacherApi = {
 
   async examStudentIds(examId: string): Promise<string[]> {
     const { data, error } = await getSupabase().from('exam_access').select('student_user_id').eq('exam_id', examId)
-    if (error) throw error
+    if (error) throw toError(error, 'Request failed.')
     return (data ?? []).map((row) => row.student_user_id)
+  },
+
+  /** Per-exam assigned sections (+ counts) for the teacher's section filter. */
+  async examAssignedSections(): Promise<{ exam_id: string; assigned_count: number; sections: string[] }[]> {
+    try {
+      return await rpc('fn_exam_assigned_sections', {})
+    } catch {
+      return []
+    }
   },
 
   async setExamStudents(examId: string, studentUserIds: string[]) {
     return rpc('fn_set_exam_access', {
       p_exam_id: examId,
       p_student_user_ids: studentUserIds,
+    })
+  },
+
+  /** Teacher grants one extra attempt to one student for one exam. */
+  async grantRetake(examId: string, studentUserId: string): Promise<{ retakes_allowed: number }> {
+    return rpc('fn_grant_retake', {
+      p_exam_id: examId,
+      p_student_user_id: studentUserId,
     })
   },
 
@@ -493,6 +549,11 @@ export const teacherApi = {
       p_points: points,
       p_feedback: feedback ?? null,
     })
+  },
+
+  /** (Re-)run keyword auto-grading over an attempt's still-ungraded essays. */
+  async autogradeAttemptEssays(studentExamId: string): Promise<{ graded: number; pending: number }> {
+    return rpc('fn_autograde_student_exam', { p_student_exam_id: studentExamId })
   },
 
   async pendingEssayCounts(examId: string): Promise<{ student_exam_id: string; pending_count: number }[]> {

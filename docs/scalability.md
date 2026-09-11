@@ -117,7 +117,7 @@ Current state:
 
 1. **Gate `scoresQuery` polling on expansion** — only poll while a dialog/expanded row is actually open. The list page then only loads on mount + window focus.
 2. **Replace 5s polling with Supabase Realtime** for the monitor. Publish the relevant tables (`student_exams`, `activity_logs`) and subscribe on the monitor page; PostgREST keeps the initial list, then updates stream in. This turns ~4 req/s/monitor into near-zero HTTP requests and is the right tool at 1k+ students.
-3. If realtime is not adopted yet, **scale the interval with the class size** (e.g. 10s for >200 students) and keep the roster query at `staleTime: 60_000`.
+3. Student realtime is intentionally scoped (see `docs/realtime.md`): only the result page streams (`student_exams` UPDATEs for one attempt); dashboard/history poll every 30s. If moving to Pro, the dashboard can join the same pattern.
 4. Push the **online-window logic into the query** (`last_active_at > now() - interval '45 seconds'`) instead of client-side filtering, so Postgres returns only online students and can use an index.
 
 ## 5. Authentication & the edge function

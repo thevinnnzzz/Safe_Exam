@@ -24,7 +24,7 @@ Points are assigned server-side from the event type in `fn_log_event`. The clien
 `in_progress AND is_online AND last_active_at within 45s`. Students send `is_online: true` heartbeats during the exam; the start function also re-marks them online when they reopen the exam.
 
 ### Why does the monitor poll instead of using realtime?
-Polling every 5s via TanStack Query is simpler and reliable at this scale (~50 students). Realtime channels are a possible future optimization.
+Polling every 5s via TanStack Query is simpler and reliable at this scale (~50 students). Student result pages do use a realtime subscription (see `docs/realtime.md`); the monitor is a possible future optimization.
 
 ## Grading
 

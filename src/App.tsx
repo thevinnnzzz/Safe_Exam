@@ -14,6 +14,7 @@ const LoginPage = lazy(() => import('@/pages/login').then((m) => ({ default: m.L
 const StudentDashboardPage = lazy(() => import('@/pages/student/dashboard').then((m) => ({ default: m.StudentDashboardPage })))
 const StudentExamPage = lazy(() => import('@/pages/student/exam').then((m) => ({ default: m.StudentExamPage })))
 const StudentResultPage = lazy(() => import('@/pages/student/result').then((m) => ({ default: m.StudentResultPage })))
+const StudentHistoryPage = lazy(() => import('@/pages/student/history').then((m) => ({ default: m.StudentHistoryPage })))
 const TeacherDashboardPage = lazy(() => import('@/pages/teacher/dashboard').then((m) => ({ default: m.TeacherDashboardPage })))
 const TeacherExamsPage = lazy(() => import('@/pages/teacher/exams').then((m) => ({ default: m.TeacherExamsPage })))
 const ExamEditorPage = lazy(() => import('@/pages/teacher/exam-editor').then((m) => ({ default: m.ExamEditorPage })))
@@ -66,6 +67,7 @@ function App() {
                   }
                 >
                   <Route index element={<StudentDashboardPage />} />
+                  <Route path="history" element={<StudentHistoryPage />} />
                   <Route path="exam/:examId" element={<StudentExamPage />} />
                   <Route path="result/:studentExamId" element={<StudentResultPage />} />
                 </Route>

@@ -28,6 +28,8 @@ interface BankQuestion {
   model_answer?: string | null
   min_words?: number
   max_words?: number | null
+  essay_keywords?: string[]
+  essay_autograde?: boolean
   choices: { id: string; content: string; is_correct: boolean; position: number }[]
 }
 
@@ -149,13 +151,24 @@ export function BankDetailPage() {
                       <p className="font-medium leading-snug">{question.content}</p>
                       {isEssay ? (
                         <div className="mt-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                          <p className="text-xs font-semibold uppercase tracking-wide">Essay — manually graded</p>
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Essay — {(question.essay_keywords ?? []).length > 0 ? 'auto-graded from keywords' : 'manually graded'}
+                          </p>
                           {question.model_answer ? (
                             <p className="mt-1.5 text-sm text-foreground">
                               <span className="font-medium">Model answer:</span> {question.model_answer}
                             </p>
                           ) : (
                             <p className="mt-1 text-xs">No model answer set.</p>
+                          )}
+                          {(question.essay_keywords ?? []).length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {(question.essay_keywords ?? []).map((kw) => (
+                                <Badge key={kw} variant="secondary">{kw}</Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-xs">No keywords set — answers will need manual grading.</p>
                           )}
                         </div>
                       ) : (
@@ -204,6 +217,7 @@ export function BankDetailPage() {
                             model_answer: question.model_answer ?? null,
                             min_words: question.min_words ?? 0,
                             max_words: question.max_words ?? null,
+                            essay_keywords: question.essay_keywords ?? [],
                             choices: question.choices.map((c) => ({ content: c.content, is_correct: c.is_correct })),
                           })
                           setFormOpen(true)

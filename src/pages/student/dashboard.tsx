@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { BookOpen, CalendarClock, ClipboardList, Clock3, History, PlayCircle, Trophy } from 'lucide-react'
 import { studentApi } from '@/api/supabase-api'
+import { isHistoryVisible } from '@/lib/types'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -15,10 +16,14 @@ export function StudentDashboardPage() {
   const availableQuery = useQuery({
     queryKey: ['student-available-exams'],
     queryFn: () => studentApi.availableExams(),
+    // Lightweight polling so teacher publishes/assignments appear without a
+    // manual refresh. Pauses automatically when the tab is hidden.
+    refetchInterval: 30_000,
   })
   const attemptsQuery = useQuery({
     queryKey: ['student-attempts'],
     queryFn: () => studentApi.myExamAttempts(),
+    refetchInterval: 30_000,
   })
 
   if (availableQuery.isLoading || attemptsQuery.isLoading) return <PageLoader />
@@ -31,7 +36,9 @@ export function StudentDashboardPage() {
     if (!attemptByExam.has(attempt.exam_id)) attemptByExam.set(attempt.exam_id, attempt)
   }
 
-  const latestAttempts = [...attempts].sort((a, b) => (b.submitted_at ?? b.started_at ?? '').localeCompare(a.submitted_at ?? a.started_at ?? ''))
+  const latestAttempts = [...attempts]
+    .filter(isHistoryVisible)
+    .sort((a, b) => (b.submitted_at ?? b.started_at ?? '').localeCompare(a.submitted_at ?? a.started_at ?? ''))
   return (
     <div className="mx-auto max-w-5xl space-y-8">
       <PageHeader title={`Welcome back!`} description="Your available exams and recent attempts." />
@@ -54,6 +61,10 @@ export function StudentDashboardPage() {
               const submitted = attempt?.status === 'submitted' || attempt?.status === 'time_up'
               const inProgress = attempt?.status === 'in_progress'
               const attemptNumber = attempt?.attempt_number ?? 1
+              // Mirrors the fn_start_exam retake gate: first attempt is free,
+              // further ones need granted retakes.
+              const attemptsUsed = attempts.filter((a) => a.exam_id === exam.id).length
+              const canRetake = !submitted || attemptsUsed < 1 + (exam.retakes_allowed ?? 0)
               return (
                 <Card key={exam.id} className="flex flex-col transition-shadow hover:shadow-md">
                   <CardHeader className="pb-3">
@@ -62,9 +73,13 @@ export function StudentDashboardPage() {
                       {inProgress ? (
                         <Badge variant="info">In progress</Badge>
                       ) : submitted ? (
-                        <Badge variant={attempt.passed ? 'success' : 'destructive'}>
-                          {attempt.passed ? 'Passed' : 'Failed'}
-                        </Badge>
+                        attempt.passed === null ? (
+                          <Badge variant="warning">Pending review</Badge>
+                        ) : (
+                          <Badge variant={attempt.passed ? 'success' : 'destructive'}>
+                            {attempt.passed ? 'Passed' : 'Failed'}
+                          </Badge>
+                        )
                       ) : null}
                     </div>
                     <CardDescription className="line-clamp-2">{exam.description ?? 'No description.'}</CardDescription>
@@ -88,6 +103,9 @@ export function StudentDashboardPage() {
                         Attempt {attemptNumber} score: {attempt.score_percent ?? 0}% ({attempt.score ?? 0} pts)
                       </span>
                     ) : null}
+                    {submitted && !canRetake ? (
+                      <span className="text-xs">No retakes remaining — ask your instructor to allow another attempt.</span>
+                    ) : null}
                   </CardContent>
                   <CardFooter className="pt-2">
                     {inProgress ? (
@@ -97,6 +115,12 @@ export function StudentDashboardPage() {
                           Resume exam
                         </Link>
                       </Button>
+                    ) : submitted && !canRetake ? (
+                      <div className="flex w-full gap-2">
+                        <Button asChild variant="outline" className="flex-1">
+                          <Link to={`/student/result/${attempt.id}`}>View result</Link>
+                        </Button>
+                      </div>
                     ) : (
                       <div className="flex w-full gap-2">
                         <Button asChild className="flex-1">
@@ -125,6 +149,9 @@ export function StudentDashboardPage() {
           <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
             <History className="h-5 w-5 text-primary" />
             Recent attempts
+            <Button asChild variant="ghost" size="sm" className="ml-auto">
+              <Link to="/student/history">View full history</Link>
+            </Button>
           </h2>
           <Card>
             <CardContent className="divide-y p-0">

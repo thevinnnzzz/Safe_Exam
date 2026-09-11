@@ -93,7 +93,7 @@ View result ──▶ fn_result_detail                (reveal correct answers on
 
 ## Data flow: teacher monitoring
 
-Teacher pages use TanStack Query with `refetchInterval` polling (monitor and exams scoreboard poll every **5s**). No websockets or realtime channels are used; polling is simpler and reliable enough for ~50 concurrent students.
+Teacher pages use TanStack Query with `refetchInterval` polling (monitor and exams scoreboard poll every **5s**). Student pages use scoped realtime: the result page streams its own attempt row (see `docs/realtime.md`); dashboard/history poll every 30s. No realtime channels are used during exam taking.
 
 - `teacherApi.examStudentRecords()` → per-student status, online flag, last_active_at, progress.
 - `teacherApi.examRiskScores()` → aggregated risk breakdown per student.

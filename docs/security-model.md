@@ -86,3 +86,9 @@ Examples:
 - **Not tamper-proof against scripted attacks** — an attacker with the JWT could call `fn_log_event` repeatedly (raising only their own score). Consider rate-limiting or CAPTCHA if that becomes a concern.
 - **No input beyond MCQs** — essay/typed answers would need additional sanitization (they're on the roadmap).
 - `.env.example` currently contains real project credentials from the development copy — restore placeholder values before sharing.
+
+## 9. Supabase advisor lints (migration `20260801000022_security_hardening.sql`)
+
+- **Fixed:** `fn_risk_level` pinned with `SET search_path`; `pg_trgm` moved from `public` to the `extensions` schema (the only `similarity()` callers resolve it via `extensions` in their path); stale 4-arg `fn_save_answer` overload dropped.
+- **Fixed:** `EXECUTE` on every `SECURITY DEFINER` function revoked from `anon`/`PUBLIC` and granted only to `authenticated` + `service_role`. Nothing calls RPCs unauthenticated (frontend always attaches the custom JWT; only the `auth-login` edge function uses the service key), so this changes no legitimate flow.
+- **Intentionally remaining:** `authenticated_*_executable` lints. The app *is* the authenticated caller by design — each function enforces role (`auth_app_role()`) and row ownership internally (see §1 and the table in §4), with RLS as the second layer. Revoking these would break the app; treat them as accepted-by-design, not vulnerabilities.

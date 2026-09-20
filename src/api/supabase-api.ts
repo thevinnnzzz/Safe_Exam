@@ -1,4 +1,5 @@
 import { getStoredUser, getSupabase } from '@/lib/supabase'
+import { downloadCSV, downloadText } from '@/lib/utils'
 import type {
   ActivityLog,
   Course,
@@ -191,6 +192,161 @@ export const studentApi = {
     return data as Exam
   },
 }
+
+// ---------------------------------------------------------------------------
+// Export exam answers (CSV/TXT)
+// ---------------------------------------------------------------------------
+
+interface ExportAnswerQuestion {
+  question_id: string
+  question_position: number
+  question_content: string
+  question_type: string
+  question_difficulty: string
+  question_category: string | null
+  question_points: number
+  question_explanation: string | null
+  question_model_answer: string | null
+  question_min_words: number
+  question_max_words: number | null
+  essay_keywords: string[]
+  essay_autograde: boolean
+  choice_id: string | null
+  answer_text: string | null
+  choice_content: string | null
+  correct_choice_content: string | null
+  is_correct: boolean | null
+  points_earned: number | null
+  points_possible: number
+  feedback: string | null
+  graded_at: string | null
+  auto_graded: boolean
+  time_spent_seconds: number
+}
+
+interface ExportAnswerStudent {
+  student_exam_id: string
+  student_id: string
+  full_name: string
+  email: string | null
+  section: string | null
+  attempt_number: number
+  status: string
+  started_at: string | null
+  submitted_at: string | null
+  time_used_seconds: number
+  score: number | null
+  score_percent: number | null
+  passed: boolean | null
+  risk_score: number
+  risk_level: string
+  answers: ExportAnswerQuestion[]
+}
+
+interface ExportAnswerPayload {
+  exam: { id: string; title: string }
+  students: ExportAnswerStudent[]
+}
+
+type ExportColumnValue = string | number | boolean | null | undefined
+
+const yesNo = (value: boolean | null) =>
+  value === null || value === undefined ? '' : value ? 'Yes' : 'No'
+
+/**
+ * Soft-wrap long free text at word boundaries so a cell renders on multiple
+ * lines in Excel (row auto-fit), matching how the Question column displays.
+ * Existing line breaks (writer-authored paragraphs) are preserved as-is.
+ */
+const softWrap = (value: string | null | undefined, width = 80): string | null | undefined => {
+  if (value === null || value === undefined) return value
+  const normalized = value.replace(/\r\n?/g, '\n')
+  const lines: string[] = []
+  for (const raw of normalized.split('\n')) {
+    const para = raw.replace(/\s+$/g, '')
+    if (para.length <= width) {
+      lines.push(para)
+      continue
+    }
+    let start = 0
+    while (para.length - start > width) {
+      let cut = width
+      const segment = para.slice(start, start + width)
+      const lastSpace = segment.lastIndexOf(' ')
+      if (lastSpace > 0) cut = lastSpace
+      lines.push(para.slice(start, start + cut))
+      start += cut
+      while (start < para.length && para[start] === ' ') start++
+    }
+    lines.push(para.slice(start))
+  }
+  return lines.join('\n')
+}
+
+const softWrapCell = (value: ExportColumnValue): ExportColumnValue => softWrap(typeof value === 'string' ? value : null)
+
+const EXPORT_COLUMN_DEFS: Record<
+  string,
+  { label: string; get: (student: ExportAnswerStudent, answer: ExportAnswerQuestion) => ExportColumnValue }
+> = {
+  student_number: { label: 'Student #', get: (s) => s.student_id },
+  student_name: { label: 'Student Name', get: (s) => s.full_name },
+  student_email: { label: 'Email', get: (s) => s.email },
+  section: { label: 'Section', get: (s) => s.section },
+  attempt_number: { label: 'Attempt #', get: (s) => s.attempt_number },
+  status: { label: 'Status', get: (s) => s.status },
+  started_at: { label: 'Started', get: (s) => s.started_at },
+  submitted_at: { label: 'Submitted', get: (s) => s.submitted_at },
+  time_used_seconds: { label: 'Time used (s)', get: (s) => s.time_used_seconds },
+  score: { label: 'Score', get: (s) => s.score },
+  score_percent: { label: 'Score %', get: (s) => s.score_percent },
+  passed: { label: 'Passed', get: (s) => yesNo(s.passed) },
+  risk_score: { label: 'Risk score', get: (s) => s.risk_score },
+  risk_level: { label: 'Risk level', get: (s) => s.risk_level },
+  question_id: { label: 'Question ID', get: (_s, a) => a.question_id },
+  question_position: { label: 'Question #', get: (_s, a) => a.question_position },
+  question_content: { label: 'Question', get: (_s, a) => softWrapCell(a.question_content) },
+  question_type: { label: 'Type', get: (_s, a) => a.question_type },
+  question_difficulty: { label: 'Difficulty', get: (_s, a) => a.question_difficulty },
+  question_category: { label: 'Category', get: (_s, a) => a.question_category },
+  question_points: { label: 'Points', get: (_s, a) => a.question_points },
+  question_explanation: { label: 'Explanation', get: (_s, a) => softWrapCell(a.question_explanation) },
+  question_model_answer: { label: 'Model answer', get: (_s, a) => softWrapCell(a.question_model_answer) },
+  question_min_words: { label: 'Min words', get: (_s, a) => a.question_min_words },
+  question_max_words: { label: 'Max words', get: (_s, a) => a.question_max_words },
+  essay_keywords: { label: 'Essay keywords', get: (_s, a) => a.essay_keywords?.join('; ') },
+  essay_autograde: { label: 'Auto-graded', get: (_s, a) => yesNo(a.essay_autograde) },
+  choice_id: { label: 'Choice ID', get: (_s, a) => a.choice_id },
+  answer_text: { label: 'Student Answer', get: (_s, a) => softWrapCell(a.answer_text ?? a.choice_content) },
+  correct_choice_content: { label: 'Correct Answer', get: (_s, a) => softWrapCell(a.correct_choice_content ?? a.question_model_answer) },
+  is_correct: { label: 'Correct?', get: (_s, a) => yesNo(a.is_correct) },
+  points_earned: { label: 'Points Earned', get: (_s, a) => a.points_earned },
+  points_possible: { label: 'Points Possible', get: (_s, a) => a.points_possible },
+  feedback: { label: 'Feedback', get: (_s, a) => softWrapCell(a.feedback) },
+  graded_at: { label: 'Graded at', get: (_s, a) => a.graded_at },
+  auto_graded: { label: 'Auto-graded', get: (_s, a) => yesNo(a.auto_graded) },
+  time_spent_seconds: { label: 'Time spent (s)', get: (_s, a) => a.time_spent_seconds },
+}
+
+const EXPORT_DEFAULT_COLUMNS = [
+  'student_number',
+  'student_name',
+  'section',
+  'score',
+  'score_percent',
+  'passed',
+  'risk_score',
+  'risk_level',
+  'question_position',
+  'question_content',
+  'question_type',
+  'question_points',
+  'answer_text',
+  'correct_choice_content',
+  'points_earned',
+  'points_possible',
+  'is_correct',
+]
 
 // ---------------------------------------------------------------------------
 // Teacher API
@@ -562,6 +718,49 @@ export const teacherApi = {
 
   async exportResults(examId: string) {
     return rpc('fn_export_results', { p_exam_id: examId })
+  },
+
+  async exportExamAnswers(
+    examId: string,
+    options: {
+      studentUserIds: string[];
+      columns: string[];
+      format: 'csv' | 'txt';
+    },
+  ) {
+    const data = await rpc<ExportAnswerPayload>('fn_export_exam_answers', {
+      p_exam_id: examId,
+      p_student_user_ids: options.studentUserIds.length > 0 ? options.studentUserIds : null,
+      p_columns: options.columns.length > 0 ? options.columns : null,
+    })
+
+    if (!data || !data.exam || data.students.length === 0) {
+      throw new Error('No matching students with submitted attempts were found for this exam.')
+    }
+
+    const columns = (options.columns.length > 0 ? options.columns : EXPORT_DEFAULT_COLUMNS).filter(
+      (key) => EXPORT_COLUMN_DEFS[key] !== undefined,
+    )
+
+    const rows: (string | number | boolean | null | undefined)[][] = [
+      columns.map((key) => EXPORT_COLUMN_DEFS[key].label),
+    ]
+
+    for (const student of data.students) {
+      for (const answer of student.answers) {
+        rows.push(
+          columns.map((key) => EXPORT_COLUMN_DEFS[key].get(student, answer)),
+        )
+      }
+    }
+
+    const base = data.exam.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'exam'
+    if (options.format === 'csv') {
+      downloadCSV(`${base}-answers.csv`, rows)
+    } else {
+      const txt = rows.map((row) => row.map((v) => v ?? '').join('\t')).join('\n')
+      downloadText(`${base}-answers.txt`, txt)
+    }
   },
 }
 

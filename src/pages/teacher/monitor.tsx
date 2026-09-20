@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import {
   Activity,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   CheckCircle2,
   Clock3,
   Radio,
@@ -14,7 +17,7 @@ import {
 import { getSupabase } from '@/lib/supabase'
 import { teacherApi } from '@/api/supabase-api'
 import { riskLevel, EVENT_LABELS } from '@/lib/risk'
-import { formatClock, formatDateTime } from '@/lib/utils'
+import { cn, formatClock, formatDateTime } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
 import { PageLoader } from '@/components/common/page-loader'
 import { StatCard } from '@/components/common/stat-card'
@@ -29,8 +32,58 @@ import type { ActivityLog } from '@/lib/types'
 const POLL_MS = 5000
 const ONLINE_WINDOW_MS = 45000
 
+type SortKey = 'student' | 'status' | 'question' | 'progress' | 'time' | 'risk'
+
+const SORTABLE_COLUMNS: { key: SortKey; label: string; className?: string; defaultDir: 'asc' | 'desc' }[] = [
+  { key: 'student', label: 'Student', defaultDir: 'asc' },
+  { key: 'status', label: 'Status', defaultDir: 'asc' },
+  { key: 'question', label: 'Current question', defaultDir: 'asc' },
+  { key: 'progress', label: 'Progress', className: 'text-center', defaultDir: 'desc' },
+  { key: 'time', label: 'Time remaining', defaultDir: 'asc' },
+  { key: 'risk', label: 'Risk', defaultDir: 'desc' },
+]
+
+function SortableHead({
+  column,
+  active,
+  direction,
+  onSort,
+}: {
+  column: (typeof SORTABLE_COLUMNS)[number]
+  active: boolean
+  direction: 'asc' | 'desc'
+  onSort: (key: SortKey) => void
+}) {
+  return (
+    <TableHead className={column.className}>
+      <button
+        type="button"
+        onClick={() => onSort(column.key)}
+        className={cn(
+          'inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium uppercase tracking-wide transition-colors hover:text-foreground',
+          active ? 'text-foreground' : 'text-muted-foreground',
+        )}
+      >
+        {column.label}
+        {active ? (
+          direction === 'asc' ? (
+            <ArrowUp className="h-3.5 w-3.5" />
+          ) : (
+            <ArrowDown className="h-3.5 w-3.5" />
+          )
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-50" />
+        )}
+      </button>
+    </TableHead>
+  )
+}
+
 export function TeacherMonitorPage() {
   const { examId } = useParams<{ examId: string }>()
+
+  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   // Ticking clock so the "time remaining" column updates every second,
   // independent of the 5s polling refetch.
@@ -132,6 +185,78 @@ export function TeacherMonitorPage() {
   const finished = latestByStudent.filter((r) => r.status === 'submitted' || r.status === 'time_up')
   const suspicious = latestByStudent.filter((r) => r.risk_score >= 40)
 
+  // Live row metrics used for ordering. "Time remaining" and "progress" need
+  // per-row values, so they are computed once and reused for both sorting and
+  // rendering below.
+  const rowMetrics = new Map(
+    latestByStudent.map((record) => {
+      const order = (record.question_order as string[] | null) ?? []
+      const currentQid = order[record.current_question_index]
+      const currentText = questionMap.get(currentQid) ?? '—'
+      const answered = record.answers ? Object.values(record.answers as Record<string, unknown>).filter(Boolean).length : 0
+      const remaining = record.status === 'in_progress' && record.started_at
+        ? Math.max(0, durationSec - Math.floor((now - new Date(record.started_at).getTime()) / 1000))
+        : 0
+      const isOnline = record.status === 'in_progress' && isRecentlyActive(record)
+      const isFinished = record.status === 'submitted' || record.status === 'time_up'
+      const statusOrder = isFinished ? 1 : record.status === 'in_progress' ? (isOnline ? 0 : 2) : 3
+      return [
+        record.id,
+        { statusOrder, currentText, currentIndex: record.current_question_index ?? 0, answered, total: order.length, remaining, isOnline, isFinished },
+      ] as const
+    }),
+  )
+
+  const sortValue = (record: (typeof latestByStudent)[number], key: SortKey): number | string => {
+    const m = rowMetrics.get(record.id)!
+    switch (key) {
+      case 'student':
+        return record.student?.full_name ?? ''
+      case 'status':
+        return m.statusOrder
+      case 'question':
+        return m.currentIndex
+      case 'progress':
+        return m.total > 0 ? m.answered / m.total : 0
+      case 'time':
+        return m.remaining
+      case 'risk':
+        return record.risk_score
+    }
+  }
+
+  const tiebreak = (a: (typeof latestByStudent)[number], b: (typeof latestByStudent)[number]) =>
+    (b.started_at ?? '').localeCompare(a.started_at ?? '') || (a.student?.full_name ?? '').localeCompare(b.student?.full_name ?? '')
+
+  const handleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir(SORTABLE_COLUMNS.find((c) => c.key === key)?.defaultDir ?? 'asc')
+    }
+  }
+
+  const sortedStudents = [...latestByStudent].sort((a, b) => {
+    if (!sortKey) return tiebreak(a, b)
+    const sign = sortDir === 'asc' ? 1 : -1
+    const av = sortValue(a, sortKey)
+    const bv = sortValue(b, sortKey)
+    const aEmpty = typeof av === 'number' ? av < 0 : av === ''
+    const bEmpty = typeof bv === 'number' ? bv < 0 : bv === ''
+    if (aEmpty && bEmpty) return tiebreak(a, b)
+    if (aEmpty) return 1
+    if (bEmpty) return -1
+    let cmp = 0
+    if (typeof av === 'number' && typeof bv === 'number') {
+      cmp = av < bv ? -1 : av > bv ? 1 : 0
+    } else {
+      cmp = String(av).localeCompare(String(bv))
+    }
+    if (cmp !== 0) return cmp * sign
+    return tiebreak(a, b)
+  })
+
   const assigned = assignedQuery.data ?? []
   const attendedIds = new Set(records.map((r) => r.student_user_id))
   const attended = assigned.filter((s) => attendedIds.has(s.id))
@@ -201,7 +326,7 @@ export function TeacherMonitorPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid items-stretch gap-6 lg:grid-cols-[1fr_420px]">
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <CardTitle className="text-sm font-semibold">Students</CardTitle>
@@ -217,25 +342,20 @@ export function TeacherMonitorPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Student</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Current question</TableHead>
-                    <TableHead className="text-center">Progress</TableHead>
-                    <TableHead>Time remaining</TableHead>
-                    <TableHead>Risk</TableHead>
+                    {SORTABLE_COLUMNS.map((column) => (
+                      <SortableHead
+                        key={column.key}
+                        column={column}
+                        active={sortKey === column.key}
+                        direction={sortDir}
+                        onSort={handleSort}
+                      />
+                    ))}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {latestByStudent.map((record) => {
-                    const order = (record.question_order as string[] | null) ?? []
-                    const currentQid = order[record.current_question_index]
-                    const currentText = questionMap.get(currentQid) ?? '—'
-                    const answered = record.answers ? Object.values(record.answers as Record<string, unknown>).filter(Boolean).length : 0
-                    const remaining = record.status === 'in_progress' && record.started_at
-                      ? Math.max(0, durationSec - Math.floor((now - new Date(record.started_at).getTime()) / 1000))
-                      : 0
-                    const isOnline = record.status === 'in_progress' && isRecentlyActive(record)
-                    const isFinished = record.status === 'submitted' || record.status === 'time_up'
+                  {sortedStudents.map((record) => {
+                    const m = rowMetrics.get(record.id)!
                     const isSuspicious = record.risk_score >= 40
 
                     return (
@@ -247,9 +367,9 @@ export function TeacherMonitorPage() {
                           <p className="text-xs text-muted-foreground">{record.student?.student_id}</p>
                         </TableCell>
                         <TableCell>
-                          {isFinished ? (
+                          {m.isFinished ? (
                             <Badge variant="secondary">Finished</Badge>
-                          ) : isOnline ? (
+                          ) : m.isOnline ? (
                             <Badge variant="success">Online</Badge>
                           ) : record.status === 'in_progress' ? (
                             <Badge variant="warning">
@@ -260,17 +380,17 @@ export function TeacherMonitorPage() {
                           )}
                         </TableCell>
                         <TableCell className="max-w-[200px]">
-                          <p className="truncate text-sm" title={currentText}>
-                            {record.status === 'in_progress' ? `Q${(record.current_question_index ?? 0) + 1}: ${currentText}` : '—'}
+                          <p className="truncate text-sm" title={m.currentText}>
+                            {record.status === 'in_progress' ? `Q${m.currentIndex + 1}: ${m.currentText}` : '—'}
                           </p>
                         </TableCell>
                         <TableCell className="text-center text-sm">
-                          {record.status === 'in_progress' ? `${answered}/${order.length}` : '—'}
+                          {record.status === 'in_progress' ? `${m.answered}/${m.total}` : '—'}
                         </TableCell>
                         <TableCell>
                           {record.status === 'in_progress' ? (
-                            <span className={`font-mono text-sm tabular-nums ${remaining < 60 ? 'text-rose-600 dark:text-rose-400' : ''}`}>
-                              {formatClock(remaining)}
+                            <span className={`font-mono text-sm tabular-nums ${m.remaining < 60 ? 'text-rose-600 dark:text-rose-400' : ''}`}>
+                              {formatClock(m.remaining)}
                             </span>
                           ) : (
                             <span className="text-muted-foreground">—</span>
@@ -292,39 +412,37 @@ export function TeacherMonitorPage() {
           </CardContent>
         </Card>
 
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <Activity className="h-4 w-4 text-primary" />
-                Live events feed
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="max-h-[560px] overflow-y-auto">
-              {activity.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">No events yet.</p>
-              ) : (
-                <div className="space-y-0">
-                  {activity.map((log) => (
-                    <div key={log.id} className="flex items-start gap-2 border-b py-2.5 last:border-0">
-                      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
-                        {log.risk_points > 0 ? <ShieldAlert className="h-3.5 w-3.5 text-rose-500" /> : <Clock3 className="h-3.5 w-3.5 text-muted-foreground" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs">
-                          <span className="font-medium">{log.student?.full_name ?? 'Student'}</span>
-                          <span className="text-muted-foreground"> · {EVENT_LABELS[log.event_type as keyof typeof EVENT_LABELS] ?? log.event_type}</span>
-                        </p>
-                        <p className="text-[11px] text-muted-foreground">{formatDateTime(log.created_at)}</p>
-                      </div>
-                      {log.risk_points > 0 ? <span className="text-xs font-semibold text-rose-500">+{log.risk_points}</span> : null}
+        <Card className="flex min-h-0 flex-col">
+          <CardHeader className="shrink-0 pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <Activity className="h-4 w-4 text-primary" />
+              Live events feed
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 overflow-y-auto">
+            {activity.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">No events yet.</p>
+            ) : (
+              <div className="space-y-0">
+                {activity.map((log) => (
+                  <div key={log.id} className="flex items-start gap-2 border-b py-2.5 last:border-0">
+                    <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
+                      {log.risk_points > 0 ? <ShieldAlert className="h-3.5 w-3.5 text-rose-500" /> : <Clock3 className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-xs">
+                        <span className="font-medium">{log.student?.full_name ?? 'Student'}</span>
+                        <span className="text-muted-foreground"> · {EVENT_LABELS[log.event_type as keyof typeof EVENT_LABELS] ?? log.event_type}</span>
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">{formatDateTime(log.created_at)}</p>
+                    </div>
+                    {log.risk_points > 0 ? <span className="shrink-0 text-xs font-semibold text-rose-500">+{log.risk_points}</span> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

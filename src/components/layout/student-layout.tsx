@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { GraduationCap, History, LayoutDashboard } from 'lucide-react'
 import { useAuth } from '@/hooks/use-auth'
@@ -7,8 +8,35 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { initials } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
+// Global lockdown for student pages: right-click and the keyboard keys that
+// open a context menu / devtools are silently blocked outside the exam too.
 export function StudentLayout() {
   const { user } = useAuth()
+
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase()
+      const isContextMenuKey = e.key === 'ContextMenu'
+      const isDevtoolsShortcut =
+        key === 'f12' ||
+        (e.ctrlKey && e.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+        (e.ctrlKey && key === 'u')
+      if (isContextMenuKey || isDevtoolsShortcut) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    document.addEventListener('contextmenu', onContextMenu, true)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('contextmenu', onContextMenu, true)
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [])
 
   return (
     <div className="flex min-h-screen flex-col bg-muted/30">

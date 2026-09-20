@@ -333,6 +333,19 @@ export function StudentExamPage() {
     return () => window.clearInterval(heartbeat)
   }, [phase, scheduleProgressSave])
 
+  // Best-effort automatic fullscreen re-entry: when the student returns focus
+  // to the exam (e.g. after Alt+Tab), immediately ask to go back into
+  // fullscreen instead of waiting for a click.
+  useEffect(() => {
+    if (phase !== 'taking' && phase !== 'locked') return
+    if (!fullscreenSupported) return
+    const onFocus = () => {
+      if (!proctor.isFullscreen) void proctor.requestFullscreen()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [phase, fullscreenSupported, proctor])
+
   // Flush on hide/unload so nothing is lost during refresh or navigation.
   useEffect(() => {
     if (phase !== 'taking' && phase !== 'locked') return
@@ -570,17 +583,23 @@ export function StudentExamPage() {
         open={violation !== null}
         onAcknowledge={() => setViolation(null)}
       />
-      {fullscreenSupported && !proctor.isFullscreen && phase === 'taking' ? (
-        <div className="mb-4 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:bg-amber-500/10 dark:text-amber-300">
-          <p className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>
-              <span className="font-medium">You left fullscreen.</span> This was logged — tap the button to return.
+      {fullscreenSupported && !proctor.isFullscreen && (phase === 'taking' || phase === 'locked') ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-6 backdrop-blur-sm">
+          <div className="w-full max-w-md space-y-4 rounded-2xl border border-amber-300/60 bg-amber-50 p-6 text-center text-amber-800 shadow-xl dark:bg-amber-500/10 dark:text-amber-300">
+            <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-500/20">
+              <AlertTriangle className="h-6 w-6" />
             </span>
-          </p>
-          <Button size="sm" onClick={() => proctor.requestFullscreen()}>
-            Re-enter fullscreen
-          </Button>
+            <div className="space-y-1">
+              <p className="text-lg font-semibold">You are no longer in fullscreen</p>
+              <p className="text-sm opacity-90">
+                Leaving fullscreen or switching tabs is not allowed during the exam. This has been logged.
+                Re-enter fullscreen to continue.
+              </p>
+            </div>
+            <Button size="lg" className="w-full" onClick={() => proctor.requestFullscreen()}>
+              Re-enter fullscreen
+            </Button>
+          </div>
         </div>
       ) : null}
       <div className="mb-4 flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Download, FileBarChart, Loader2, RotateCcw, Search, ShieldAlert, TimerOff, FileSpreadsheet, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Download, FileBarChart, FileUp, Loader2, RotateCcw, Search, ShieldAlert, TimerOff, FileSpreadsheet, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { teacherApi } from '@/api/supabase-api'
 import { riskLevel } from '@/lib/risk'
@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { RiskScore, StudentExam } from '@/lib/types'
 import { ExportExamAnswersModal } from '@/components/features/teacher/export-exam-answers'
+import { ImportGradesModal } from '@/components/features/teacher/import-grades-modal'
 
 type SortKey = 'student' | 'attempt' | 'score' | 'percent' | 'time' | 'risk' | 'incidents' | 'status'
 
@@ -102,6 +103,7 @@ export function TeacherResultsPage() {
   })
 
   const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [importModalOpen, setImportModalOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
@@ -276,6 +278,10 @@ export function TeacherResultsPage() {
         <Button onClick={() => setExportModalOpen(true)}>
           <FileSpreadsheet className="h-4 w-4" />
           Export Answers
+        </Button>
+        <Button variant="outline" onClick={() => setImportModalOpen(true)}>
+          <FileUp className="h-4 w-4" />
+          Import Grades
         </Button>
         <Button onClick={exportResults}>
           <Download className="h-4 w-4" />
@@ -468,6 +474,18 @@ export function TeacherResultsPage() {
         examId={examId!}
         examTitle={exam.title}
         students={exportStudents}
+      />
+      <ImportGradesModal
+        open={importModalOpen}
+        onOpenChange={(next) => {
+          if (!next) {
+            queryClient.invalidateQueries({ queryKey: ['teacher-results-records', examId] })
+            queryClient.invalidateQueries({ queryKey: ['teacher-result-detail'] })
+          }
+          setImportModalOpen(next)
+        }}
+        examId={examId!}
+        examTitle={exam.title}
       />
     </div>
   )

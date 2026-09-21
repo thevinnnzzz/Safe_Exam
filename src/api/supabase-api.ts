@@ -720,12 +720,24 @@ export const teacherApi = {
     return rpc('fn_export_results', { p_exam_id: examId })
   },
 
+  async importAnswerGrades(
+    examId: string,
+    rows: { student_number: string; question_position: number; points_earned: number; feedback: string | null }[],
+  ): Promise<{ applied: number; skipped: number; errors: { student_number: string; question_position: string; reason: string }[]; attempts_affected: number }> {
+    return rpc('fn_import_answer_grades', {
+      p_exam_id: examId,
+      p_rows: rows,
+    })
+  },
+
   async exportExamAnswers(
     examId: string,
     options: {
       studentUserIds: string[];
       columns: string[];
       format: 'csv' | 'txt';
+      /** Client-side filter so teachers can isolate Essay / MCQ / Both without a new RPC. */
+      questionType?: 'all' | 'essay' | 'multiple_choice';
     },
   ) {
     const data = await rpc<ExportAnswerPayload>('fn_export_exam_answers', {
@@ -738,6 +750,12 @@ export const teacherApi = {
       throw new Error('No matching students with submitted attempts were found for this exam.')
     }
 
+    const filter = options.questionType ?? 'all'
+    const matchesFilter = (answer: ExportAnswerQuestion) => {
+      if (filter === 'all') return true
+      return (answer.question_type ?? 'multiple_choice') === filter
+    }
+
     const columns = (options.columns.length > 0 ? options.columns : EXPORT_DEFAULT_COLUMNS).filter(
       (key) => EXPORT_COLUMN_DEFS[key] !== undefined,
     )
@@ -748,10 +766,16 @@ export const teacherApi = {
 
     for (const student of data.students) {
       for (const answer of student.answers) {
+        if (!matchesFilter(answer)) continue
         rows.push(
           columns.map((key) => EXPORT_COLUMN_DEFS[key].get(student, answer)),
         )
       }
+    }
+
+    if (rows.length === 1) {
+      const label = filter === 'essay' ? 'essay' : filter === 'multiple_choice' ? 'MCQ' : 'matching'
+      throw new Error(`No ${label} answers found for the selected students.`)
     }
 
     const base = data.exam.title.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'exam'

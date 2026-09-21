@@ -76,6 +76,7 @@ export function ExportExamAnswersModal({
 }: ExportExamAnswersModalProps) {
   const [selectedStudents, setSelectedStudents] = useState<string[]>([])
   const [selectedColumns, setSelectedColumns] = useState<string[]>([])
+  const [questionType, setQuestionType] = useState<'all' | 'essay' | 'multiple_choice'>('all')
   const [format, setFormat] = useState<'csv' | 'txt'>('csv')
   const [isExporting, setIsExporting] = useState(false)
   const [search, setSearch] = useState('')
@@ -85,6 +86,7 @@ export function ExportExamAnswersModal({
     if (open) {
       setSelectedStudents(students.map((s) => s.student_user_id))
       setSelectedColumns(allColumns.filter((c) => c.default).map((c) => c.key))
+      setQuestionType('all')
       setFormat('csv')
       setSearch('')
       setCollapsedGroups([])
@@ -147,8 +149,10 @@ export function ExportExamAnswersModal({
         studentUserIds: selectedStudents,
         columns: selectedColumns,
         format,
+        questionType,
       })
-      toast.success(`Exported ${selectedStudents.length} student${selectedStudents.length === 1 ? '' : 's'} to ${format.toUpperCase()}.`)
+      const typeLabel = questionType === 'essay' ? 'essay' : questionType === 'multiple_choice' ? 'MCQ' : 'all'
+      toast.success(`Exported ${selectedStudents.length} student${selectedStudents.length === 1 ? '' : 's'} (${typeLabel}) to ${format.toUpperCase()}.`)
       onOpenChange(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Export failed.')
@@ -287,6 +291,46 @@ export function ExportExamAnswersModal({
               </div>
             </ScrollArea>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
+          <span className="text-sm font-medium">Question type</span>
+          <div className="flex items-center gap-1 rounded-md border bg-background p-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={questionType === 'all' ? 'secondary' : 'ghost'}
+              className="h-7 px-3 text-xs"
+              onClick={() => setQuestionType('all')}
+            >
+              Both
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={questionType === 'essay' ? 'secondary' : 'ghost'}
+              className="h-7 px-3 text-xs"
+              onClick={() => setQuestionType('essay')}
+            >
+              Essay only
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={questionType === 'multiple_choice' ? 'secondary' : 'ghost'}
+              className="h-7 px-3 text-xs"
+              onClick={() => setQuestionType('multiple_choice')}
+            >
+              MCQ only
+            </Button>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {questionType === 'essay'
+              ? 'Only essay rows — ideal for the Import Grades CSV.'
+              : questionType === 'multiple_choice'
+                ? 'Only MCQ rows.'
+                : 'All rows (essay + MCQ).'}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">

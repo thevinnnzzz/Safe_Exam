@@ -730,6 +730,10 @@ export const teacherApi = {
     })
   },
 
+  async recomputeExamPassFail(examId: string): Promise<{ recomputed: number }> {
+    return rpc('fn_recompute_exam_passfail', { p_exam_id: examId })
+  },
+
   async exportExamAnswers(
     examId: string,
     options: {

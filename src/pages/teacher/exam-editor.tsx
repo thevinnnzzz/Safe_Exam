@@ -202,10 +202,22 @@ export function ExamEditorPage() {
         passing_score: values.passing_score,
         ...toggles,
       }
+      const beforePassing = editing ? Number(existingQuery.data?.exam.passing_score) : null
       if (editing && examId) {
         await teacherApi.updateExam(examId, payload)
         await teacherApi.setExamQuestions(examId, questionIds, 1)
         await teacherApi.setExamStudents(examId, studentIds)
+        const afterPassing = Number(values.passing_score)
+        if (Number.isFinite(beforePassing) && Number.isFinite(afterPassing) && beforePassing !== afterPassing) {
+          try {
+            const { recomputed } = await teacherApi.recomputeExamPassFail(examId)
+            if (recomputed > 0) {
+              toast.success(`Passing score updated — ${recomputed} result${recomputed === 1 ? '' : 's'} recomputed.`)
+            }
+          } catch {
+            toast.warning('Passing score saved, but existing results could not be recomputed automatically. Reopen the results page or re-import a grade to refresh them.')
+          }
+        }
         return examId
       }
       const created = await teacherApi.createExam(payload)

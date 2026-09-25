@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, Download, FileBarChart, FileUp, Loader2, RotateCcw, Search, ShieldAlert, TimerOff, FileSpreadsheet, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { getSupabase, getToken } from '@/lib/supabase'
 import { teacherApi } from '@/api/supabase-api'
-import { riskLevel } from '@/lib/risk'
+import { EVENT_LABELS, riskLevel } from '@/lib/risk'
 import { cn, downloadCSV, formatClock, formatDateTime } from '@/lib/utils'
 import { PageHeader } from '@/components/common/page-header'
 import { PageLoader } from '@/components/common/page-loader'
@@ -13,12 +14,17 @@ import { RiskBadge } from '@/components/common/risk-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { RiskScore, StudentExam } from '@/lib/types'
+import type { ActivityLog, RiskScore, StudentExam } from '@/lib/types'
 import { ExportExamAnswersModal } from '@/components/features/teacher/export-exam-answers'
 import { ImportGradesModal } from '@/components/features/teacher/import-grades-modal'
+
+/** Long safety-net poll while the Risk dialog is open (socket is the primary feed). */
+const RISK_FALLBACK_POLL_MS = 60_000
 
 type SortKey = 'student' | 'attempt' | 'score' | 'percent' | 'time' | 'risk' | 'incidents' | 'status'
 
@@ -92,6 +98,98 @@ export function TeacherResultsPage() {
     enabled: !!examId,
   })
 
+  const [riskRecord, setRiskRecord] = useState<StudentExam | null>(null)
+  const [riskLive, setRiskLive] = useState(false)
+  const riskAttemptId = riskRecord?.id ?? null
+
+  // Lazy per-attempt incident feed for the Risk dialog. The realtime channel
+  // below is the primary feed; this query does the initial load plus a slow
+  // 60s fallback poll while the dialog is open (covers socket drops / expiry).
+  const riskActivityQuery = useQuery({
+    queryKey: ['teacher-results-risk-activity', riskAttemptId],
+    queryFn: async () => {
+      const { data, error } = await getSupabase()
+        .from('activity_logs')
+        .select('id, event_type, risk_points, created_at, meta')
+        .eq('student_exam_id', riskAttemptId!)
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (error) throw error
+      return (data ?? []) as ActivityLog[]
+    },
+    enabled: !!riskAttemptId,
+    refetchInterval: riskAttemptId ? RISK_FALLBACK_POLL_MS : false,
+  })
+
+  // Scalable live feed: one channel per open dialog, two server-filtered
+  // bindings (this attempt's INSERTs + risk UPDATEs). Payloads are applied
+  // straight into the query cache — zero refetches per event, zero traffic
+  // when idle. Channel is removed on dialog close (no idle sockets).
+  useEffect(() => {
+    if (!riskAttemptId) {
+      setRiskLive(false)
+      return
+    }
+    const token = getToken()
+    if (!token) return
+    const client = getSupabase()
+    client.realtime.setAuth(token)
+
+    const channel = client
+      .channel(`teacher-risk-${riskAttemptId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'activity_logs',
+          filter: `student_exam_id=eq.${riskAttemptId}`,
+        },
+        (payload) => {
+          const row = payload.new as unknown as ActivityLog
+          queryClient.setQueryData<ActivityLog[]>(
+            ['teacher-results-risk-activity', riskAttemptId],
+            (old) => {
+              const prev = old ?? []
+              if (prev.some((r) => r.id === row.id)) return prev
+              return [row, ...prev].slice(0, 200)
+            },
+          )
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'risk_scores',
+          filter: `student_exam_id=eq.${riskAttemptId}`,
+        },
+        (payload) => {
+          const row = payload.new as unknown as RiskScore
+          queryClient.setQueryData<RiskScore[]>(
+            ['teacher-results-risk', examId],
+            (old) => (old ?? []).map((r) => (r.student_exam_id === riskAttemptId ? { ...r, ...row } : r)),
+          )
+        },
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRiskLive(true)
+          // Catch-up fetch in case anything landed between open and subscribe.
+          queryClient.invalidateQueries({ queryKey: ['teacher-results-risk-activity', riskAttemptId] })
+          queryClient.invalidateQueries({ queryKey: ['teacher-results-risk', examId] })
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRiskLive(false)
+        }
+      })
+
+    return () => {
+      setRiskLive(false)
+      void client.removeChannel(channel)
+    }
+  }, [riskAttemptId, examId, queryClient])
+
   const retakeMutation = useMutation({
     mutationFn: ({ studentUserId, studentName }: { studentUserId: string; studentName: string }) =>
       teacherApi.grantRetake(examId!, studentUserId).then((result) => ({ ...result, studentName })),
@@ -133,6 +231,28 @@ export function TeacherResultsPage() {
       toast.error('Could not export results.')
     }
   }
+
+  // Trigger breakdown for the Risk dialog, derived from the live incident feed:
+  // per event_type → { count, points }. Falls back to the risk_scores row when
+  // the log feed is still loading/empty but totals exist.
+  const riskTriggerGroups = useMemo(() => {
+    const logs = (riskActivityQuery.data ?? []).filter((l) => (l.risk_points ?? 0) > 0)
+    const groups = new Map<string, { count: number; points: number }>()
+    for (const log of logs) {
+      const entry = groups.get(log.event_type) ?? { count: 0, points: 0 }
+      entry.count += 1
+      entry.points += log.risk_points ?? 0
+      groups.set(log.event_type, entry)
+    }
+    return [...groups.entries()]
+      .map(([eventType, { count, points }]) => ({ eventType, count, points }))
+      .sort((a, b) => b.points - a.points)
+  }, [riskActivityQuery.data])
+
+  const riskDialogIncidents = useMemo(
+    () => (riskActivityQuery.data ?? []).filter((l) => (l.risk_points ?? 0) > 0),
+    [riskActivityQuery.data],
+  )
 
   if (examQuery.isLoading || recordsQuery.isLoading) return <PageLoader />
 
@@ -398,7 +518,15 @@ export function TeacherResultsPage() {
                           </TableCell>
                           <TableCell className="font-mono text-sm">{finished ? formatClock(record.time_used_seconds) : '—'}</TableCell>
                           <TableCell>
-                            {record.risk_score > 0 ? <RiskBadge level={riskLevel(record.risk_score)} points={record.risk_score} /> : <span className="text-sm text-muted-foreground">0</span>}
+                            <button
+                              type="button"
+                              onClick={() => setRiskRecord(record)}
+                              aria-label={`View risk details for ${record.student?.full_name ?? 'Student'}`}
+                              title="View what triggered this risk score"
+                              className="cursor-pointer rounded transition-opacity hover:opacity-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              {record.risk_score > 0 ? <RiskBadge level={riskLevel(record.risk_score)} points={record.risk_score} /> : <span className="text-sm text-muted-foreground">0</span>}
+                            </button>
                           </TableCell>
                           <TableCell>{incidents > 0 ? <span className="font-medium text-rose-600 dark:text-rose-400">{incidents}</span> : '0'}</TableCell>
                           <TableCell>
@@ -487,6 +615,179 @@ export function TeacherResultsPage() {
         examId={examId!}
         examTitle={exam.title}
       />
+      <RiskDetailDialog
+        record={riskRecord}
+        risk={riskRecord ? riskMap.get(riskRecord.id) : undefined}
+        triggerGroups={riskTriggerGroups}
+        incidents={riskDialogIncidents}
+        loading={riskActivityQuery.isLoading}
+        updating={riskActivityQuery.isFetching}
+        live={riskLive}
+        examId={examId!}
+        onClose={() => setRiskRecord(null)}
+      />
     </div>
+  )
+}
+
+const RISK_COUNT_LABELS: { key: keyof RiskScore; label: string }[] = [
+  { key: 'tab_switches', label: 'Tab switches' },
+  { key: 'fullscreen_exits', label: 'Fullscreen exits' },
+  { key: 'copy_attempts', label: 'Copy attempts' },
+  { key: 'paste_attempts', label: 'Paste attempts' },
+  { key: 'cut_attempts', label: 'Cut attempts' },
+  { key: 'devtools_attempts', label: 'DevTools shortcuts' },
+  { key: 'refresh_attempts', label: 'Refresh attempts' },
+  { key: 'navigate_attempts', label: 'Back/forward nav' },
+  { key: 'find_attempts', label: 'Find on page' },
+  { key: 'print_attempts', label: 'Print shortcuts' },
+  { key: 'save_attempts', label: 'Save page' },
+  { key: 'zoom_attempts', label: 'Zoom shortcuts' },
+  { key: 'new_tab_attempts', label: 'New tab/window' },
+  { key: 'idle_events', label: 'Idle events' },
+]
+
+function RiskDetailDialog({
+  record,
+  risk,
+  triggerGroups,
+  incidents,
+  loading,
+  updating,
+  live,
+  examId,
+  onClose,
+}: {
+  record: StudentExam | null
+  risk: RiskScore | undefined
+  triggerGroups: { eventType: string; count: number; points: number }[]
+  incidents: ActivityLog[]
+  loading: boolean
+  updating: boolean
+  live: boolean
+  examId: string
+  onClose: () => void
+}) {
+  const fallbackCounts = risk
+    ? RISK_COUNT_LABELS.map(({ key, label }) => ({ label, value: Number(risk[key] ?? 0) })).filter(
+        (c) => c.value > 0,
+      )
+    : []
+  const idleMins = risk ? Math.round((risk.idle_seconds ?? 0) / 60) : 0
+
+  return (
+    <Dialog open={!!record} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader className="pr-8">
+          <DialogTitle className="flex flex-wrap items-center gap-2">
+            <ShieldAlert className="h-5 w-5 text-primary" />
+            Risk details — {record?.student?.full_name ?? 'Student'}
+            <span className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+              <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-500' : 'bg-muted-foreground/50')} />
+              {live ? 'Live' : 'Connecting…'}
+              {updating && live ? ' · Updating…' : ''}
+            </span>
+          </DialogTitle>
+          <DialogDescription>
+            {record?.student?.student_id ?? ''} · Attempt {record?.attempt_number ?? 1} · {record?.status ?? ''}
+            {risk ? (
+              <>
+                {' · '}
+                <RiskBadge level={riskLevel(record?.risk_score ?? 0)} points={record?.risk_score ?? 0} />
+              </>
+            ) : null}
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">Loading incidents…</p>
+        ) : triggerGroups.length === 0 && fallbackCounts.length === 0 ? (
+          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No cheating-related incidents recorded for this attempt.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Where the risk came from
+              </p>
+              {triggerGroups.length > 0 ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {triggerGroups.map((g) => (
+                    <div key={g.eventType} className="flex items-center justify-between gap-2 rounded-lg border p-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">
+                          {EVENT_LABELS[g.eventType as keyof typeof EVENT_LABELS] ?? g.eventType}
+                        </p>
+                        <p className="text-xs text-muted-foreground">×{g.count}</p>
+                      </div>
+                      <span className="shrink-0 text-sm font-bold text-rose-600 dark:text-rose-400">+{g.points}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {fallbackCounts.map((c) => (
+                    <div key={c.label} className="flex items-center justify-between gap-2 rounded-lg border p-2.5">
+                      <p className="text-sm font-medium">{c.label}</p>
+                      <span className="text-sm font-bold text-rose-600 dark:text-rose-400">×{c.value}</span>
+                    </div>
+                  ))}
+                  {idleMins > 0 ? (
+                    <div className="flex items-center justify-between gap-2 rounded-lg border p-2.5">
+                      <p className="text-sm font-medium">Idle time</p>
+                      <span className="text-sm font-bold">{idleMins} min</span>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Specific incidents ({incidents.length})
+              </p>
+              {incidents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Incident feed is still loading — totals above are current.</p>
+              ) : (
+                <ScrollArea className="h-[min(40vh,22rem)] rounded-lg border">
+                  <div className="divide-y">
+                    {incidents.map((log) => (
+                      <div key={log.id} className="flex items-start gap-2 px-3 py-2">
+                        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
+                          <ShieldAlert className="h-3.5 w-3.5 text-rose-500" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium">
+                            {EVENT_LABELS[log.event_type as keyof typeof EVENT_LABELS] ?? log.event_type}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">{formatDateTime(log.created_at)}</p>
+                        </div>
+                        <span className="shrink-0 text-xs font-semibold text-rose-500">+{log.risk_points}</span>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Risk scores are advisory — review the activity logs before taking action.
+            </p>
+          </div>
+        )}
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          {record ? (
+            <Button asChild onClick={onClose}>
+              <Link to={`/teacher/exams/${examId}/results/${record.id}`}>Open full review</Link>
+            </Button>
+          ) : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

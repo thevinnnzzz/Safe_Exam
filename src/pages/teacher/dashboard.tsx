@@ -8,9 +8,11 @@ import {
   BookOpen,
   CheckCircle2,
   Clock3,
+  FileQuestion,
   Filter,
   Gauge,
   Radio,
+  Search,
   ShieldAlert,
   TrendingDown,
   TrendingUp,
@@ -27,11 +29,90 @@ import { StatCard } from '@/components/common/stat-card'
 import { RiskBadge } from '@/components/common/risk-badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { BarChart, ChartCard, DoughnutChart, palette } from '@/components/features/teacher/charts'
 import { formatDateTime } from '@/lib/utils'
 import type { ActivityLog } from '@/lib/types'
+
+type DatePreset = 'all' | 'today' | '7d' | '30d' | 'custom'
+
+function parseTimeMinutes(value: string): number | null {
+  if (!value) return null
+  const [h, m] = value.split(':').map(Number)
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null
+  return h * 60 + m
+}
+
+function inTimeWindow(dateIso: string, timeFrom: string, timeTo: string): boolean {
+  if (!timeFrom && !timeTo) return true
+  const from = parseTimeMinutes(timeFrom)
+  const to = parseTimeMinutes(timeTo)
+  if (from === null && to === null) return true
+  const d = new Date(dateIso)
+  if (Number.isNaN(d.getTime())) return false
+  const mins = d.getHours() * 60 + d.getMinutes()
+  if (from !== null && to !== null) {
+    if (from <= to) return mins >= from && mins <= to
+    // overnight wrap, e.g. 22:00–06:00
+    return mins >= from || mins <= to
+  }
+  if (from !== null) return mins >= from
+  return mins <= (to as number)
+}
+
+function resolveDateBounds(
+  preset: DatePreset,
+  fromRaw: string,
+  toRaw: string,
+): { from: Date | null; to: Date | null; error: string | null } {
+  const now = new Date()
+  if (preset === 'all') return { from: null, to: null, error: null }
+  if (preset === 'today') {
+    const start = new Date(now)
+    start.setHours(0, 0, 0, 0)
+    return { from: start, to: now, error: null }
+  }
+  if (preset === '7d') {
+    return { from: new Date(now.getTime() - 7 * 24 * 3600_000), to: now, error: null }
+  }
+  if (preset === '30d') {
+    return { from: new Date(now.getTime() - 30 * 24 * 3600_000), to: now, error: null }
+  }
+  // custom
+  let from: Date | null = null
+  let to: Date | null = null
+  if (fromRaw) {
+    const d = new Date(fromRaw)
+    if (Number.isNaN(d.getTime())) return { from: null, to: null, error: 'Invalid start date.' }
+    from = d
+  }
+  if (toRaw) {
+    const d = new Date(toRaw)
+    if (Number.isNaN(d.getTime())) return { from: null, to: null, error: 'Invalid end date.' }
+    to = d
+  }
+  if (from && to && from.getTime() > to.getTime()) {
+    return { from, to, error: 'Start must be before end.' }
+  }
+  if (!from && !to) return { from: null, to: null, error: null }
+  return { from, to, error: null }
+}
+
+function inDateRange(iso: string | null, from: Date | null, to: Date | null): boolean {
+  if (!from && !to) return true
+  if (!iso) return false
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return false
+  if (from && t < from.getTime()) return false
+  if (to && t > to.getTime()) return false
+  return true
+}
 
 export function TeacherDashboardPage() {
   const [examFilter, setExamFilter] = useState<string>('all')
@@ -39,6 +120,13 @@ export function TeacherDashboardPage() {
   const [riskFilter, setRiskFilter] = useState<string>('all')
   const [eventFilter, setEventFilter] = useState<string>('all')
   const [activitySort, setActivitySort] = useState<'newest' | 'oldest' | 'risk'>('newest')
+  const [datePreset, setDatePreset] = useState<DatePreset>('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [timeFrom, setTimeFrom] = useState('')
+  const [timeTo, setTimeTo] = useState('')
+  const [activeDifficulty, setActiveDifficulty] = useState<'easy' | 'medium' | 'hard' | null>(null)
+  const [difficultySearch, setDifficultySearch] = useState('')
 
   const examsQuery = useQuery({ queryKey: ['teacher-exams'], queryFn: () => teacherApi.exams() })
 
@@ -63,6 +151,40 @@ export function TeacherDashboardPage() {
     },
   })
 
+  const difficultyDetailQuery = useQuery({
+    queryKey: ['teacher-difficulty-detail'],
+    queryFn: async () => {
+      const { data, error } = await getSupabase()
+        .from('questions')
+        .select('id, content, difficulty, category, points, question_bank_id, created_at, question_bank:question_bank(id, name)')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as unknown as {
+        id: string
+        content: string
+        difficulty: string
+        category: string | null
+        points: number
+        question_bank_id: string | null
+        created_at: string
+        question_bank: { id: string; name: string } | null
+      }[]
+    },
+    enabled: activeDifficulty !== null,
+  })
+
+  const examQuestionsQuery = useQuery({
+    queryKey: ['teacher-exam-questions-map'],
+    queryFn: async () => {
+      const { data, error } = await getSupabase()
+        .from('exam_questions')
+        .select('question_id, exam_id, exam:exams(id, title, status)')
+      if (error) throw error
+      return (data ?? []) as unknown as { question_id: string; exam_id: string; exam: { id: string; title: string; status: string } | null }[]
+    },
+    enabled: activeDifficulty !== null,
+  })
+
   const activityQuery = useQuery({
     queryKey: ['teacher-activity-feed'],
     queryFn: async () => {
@@ -81,19 +203,37 @@ export function TeacherDashboardPage() {
   const difficulties = difficultyQuery.data ?? []
   const allActivity = activityQuery.data ?? []
 
+  const dateBounds = useMemo(() => resolveDateBounds(datePreset, dateFrom, dateTo), [datePreset, dateFrom, dateTo])
+  const hasTimeFilter = timeFrom !== '' || timeTo !== ''
+
   const filteredRecords = useMemo(() => {
+    const { from, to, error } = dateBounds
+    const useDate = !error
     return allRecords.filter((r) => {
       if (examFilter !== 'all' && r.exam_id !== examFilter) return false
       if (statusFilter !== 'all' && r.status !== statusFilter) return false
       if (riskFilter !== 'all' && riskLevel(r.risk_score) !== riskFilter) return false
+      if (useDate && (from || to)) {
+        const ts = r.submitted_at ?? r.last_active_at
+        if (!inDateRange(ts, from, to)) return false
+        if (hasTimeFilter && ts && !inTimeWindow(ts, timeFrom, timeTo)) return false
+        if (hasTimeFilter && !ts) return false
+      } else if (hasTimeFilter) {
+        const ts = r.submitted_at ?? r.last_active_at
+        if (!ts || !inTimeWindow(ts, timeFrom, timeTo)) return false
+      }
       return true
     })
-  }, [allRecords, examFilter, statusFilter, riskFilter])
+  }, [allRecords, examFilter, statusFilter, riskFilter, dateBounds, timeFrom, timeTo, hasTimeFilter])
 
   const filteredActivity = useMemo(() => {
+    const { from, to, error } = dateBounds
+    const useDate = !error
     const list = allActivity.filter((log) => {
       if (examFilter !== 'all' && log.exam_id !== examFilter) return false
       if (eventFilter !== 'all' && log.event_type !== eventFilter) return false
+      if (useDate && (from || to) && !inDateRange(log.created_at, from, to)) return false
+      if (hasTimeFilter && !inTimeWindow(log.created_at, timeFrom, timeTo)) return false
       return true
     })
     return [...list].sort((a, b) => {
@@ -101,11 +241,19 @@ export function TeacherDashboardPage() {
       if (activitySort === 'risk') return (b.risk_points ?? 0) - (a.risk_points ?? 0)
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
-  }, [allActivity, examFilter, eventFilter, activitySort])
+  }, [allActivity, examFilter, eventFilter, activitySort, dateBounds, timeFrom, timeTo, hasTimeFilter])
 
   const records = filteredRecords
   const activity = filteredActivity
-  const hasFilters = examFilter !== 'all' || statusFilter !== 'all' || riskFilter !== 'all' || eventFilter !== 'all'
+  const hasFilters =
+    examFilter !== 'all' ||
+    statusFilter !== 'all' ||
+    riskFilter !== 'all' ||
+    eventFilter !== 'all' ||
+    datePreset !== 'all' ||
+    dateFrom !== '' ||
+    dateTo !== '' ||
+    hasTimeFilter
 
   const clearFilters = () => {
     setExamFilter('all')
@@ -113,9 +261,12 @@ export function TeacherDashboardPage() {
     setRiskFilter('all')
     setEventFilter('all')
     setActivitySort('newest')
+    setDatePreset('all')
+    setDateFrom('')
+    setDateTo('')
+    setTimeFrom('')
+    setTimeTo('')
   }
-
-  if (examsQuery.isLoading || recordsQuery.isLoading) return <PageLoader />
 
   const submitted = records.filter((r) => r.status === 'submitted' || r.status === 'time_up')
   const online = records.filter(
@@ -131,23 +282,78 @@ export function TeacherDashboardPage() {
   const riskBuckets = { low: 0, medium: 0, high: 0 }
   for (const r of records) riskBuckets[riskLevel(r.risk_score)] += 1
 
-  // Submission timeline (last 24h in 2h buckets)
-  const buckets = Array.from({ length: 12 }, () => ({ label: '', count: 0 }))
-  const now = Date.now()
-  for (let i = 11; i >= 0; i--) {
-    const start = now - (i + 1) * 2 * 3600_000
-    const label = new Date(start).toLocaleTimeString([], { hour: '2-digit' })
-    buckets[11 - i].label = label
-  }
-  for (const r of submitted) {
-    if (!r.submitted_at) continue
-    const ts = new Date(r.submitted_at).getTime()
-    const hoursAgo = (now - ts) / 3600_000
-    if (hoursAgo >= 0 && hoursAgo < 24) {
-      const idx = Math.min(11, Math.floor(hoursAgo / 2))
-      buckets[11 - idx].count += 1
+  // Submission timeline — respects active date window, falls back to last 24h in 2h buckets
+  const buckets = useMemo(() => {
+    const arr = Array.from({ length: 12 }, () => ({ label: '', count: 0 }))
+    const nowMs = Date.now()
+    const { from, to, error } = dateBounds
+    const hasWindow = !error && (from !== null || to !== null || datePreset !== 'all')
+    let windowStart: number
+    let windowEnd: number
+    if (!hasWindow) {
+      windowStart = nowMs - 24 * 3600_000
+      windowEnd = nowMs
+    } else {
+      windowStart = from ? from.getTime() : nowMs - 24 * 3600_000
+      windowEnd = to ? to.getTime() : nowMs
+      if (windowEnd <= windowStart) windowEnd = windowStart + 24 * 3600_000
     }
-  }
+    const span = windowEnd - windowStart
+    const bucketMs = span / 12
+    for (let i = 0; i < 12; i++) {
+      const bucketStart = windowStart + i * bucketMs
+      // Short window: show HH:MM, long window: show Mon DD
+      const isShort = span <= 2 * 24 * 3600_000
+      arr[i].label = isShort
+        ? new Date(bucketStart).toLocaleTimeString([], { hour: '2-digit' })
+        : new Date(bucketStart).toLocaleDateString([], { month: 'short', day: 'numeric' })
+    }
+    for (const r of submitted) {
+      if (!r.submitted_at) continue
+      const ts = new Date(r.submitted_at).getTime()
+      if (Number.isNaN(ts) || ts < windowStart || ts > windowEnd) continue
+      if (hasTimeFilter && !inTimeWindow(r.submitted_at, timeFrom, timeTo)) continue
+      const idx = Math.min(11, Math.max(0, Math.floor((ts - windowStart) / bucketMs)))
+      arr[idx].count += 1
+    }
+    return arr
+  }, [submitted, dateBounds, datePreset, timeFrom, timeTo, hasTimeFilter])
+
+  const submissionChartDescription = useMemo(() => {
+    const { from, to, error } = dateBounds
+    if (error || (!from && !to && datePreset === 'all' && !hasTimeFilter)) return 'How many students submitted over time.'
+    const fmt = (d: Date) => d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    if (datePreset === 'today') return 'Today — submissions by hour.'
+    if (datePreset === '7d') return 'Last 7 days — submissions per day.'
+    if (datePreset === '30d') return 'Last 30 days — submissions per day.'
+    if (from && to) return `${fmt(from)} → ${fmt(to)}`
+    if (from) return `Since ${fmt(from)}`
+    if (to) return `Until ${fmt(to)}`
+    return 'Filtered window'
+  }, [dateBounds, datePreset, hasTimeFilter])
+
+  const questionUsageMap = useMemo(() => {
+    const map = new Map<string, { id: string; title: string }[]>()
+    for (const row of examQuestionsQuery.data ?? []) {
+      const list = map.get(row.question_id) ?? []
+      if (row.exam) list.push({ id: row.exam.id, title: row.exam.title })
+      map.set(row.question_id, list)
+    }
+    return map
+  }, [examQuestionsQuery.data])
+
+  const filteredDifficultyQuestions = useMemo(() => {
+    if (!activeDifficulty) return []
+    const q = difficultyDetailQuery.data ?? []
+    const needle = difficultySearch.trim().toLowerCase()
+    return q.filter((item) => {
+      if (item.difficulty !== activeDifficulty) return false
+      if (!needle) return true
+      return `${item.content} ${item.category ?? ''} ${item.question_bank?.name ?? ''}`.toLowerCase().includes(needle)
+    })
+  }, [activeDifficulty, difficultyDetailQuery.data, difficultySearch])
+
+  if (examsQuery.isLoading || recordsQuery.isLoading) return <PageLoader />
 
   // Average time used per exam
   const examTimeMap = new Map<string, { title: string; total: number; n: number }>()
@@ -261,6 +467,59 @@ export function TeacherDashboardPage() {
               </Select>
             </div>
           </div>
+
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium">Date &amp; time</p>
+              <div className="flex flex-wrap items-center gap-1">
+                {(['all', 'today', '7d', '30d', 'custom'] as const).map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    size="sm"
+                    variant={datePreset === preset ? 'secondary' : 'ghost'}
+                    className="h-7 px-2.5 text-xs"
+                    onClick={() => setDatePreset(preset)}
+                  >
+                    {preset === 'all' ? 'All time' : preset === 'today' ? 'Today' : preset === '7d' ? '7 days' : preset === '30d' ? '30 days' : 'Custom'}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {datePreset === 'custom' ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="dash-date-from" className="text-xs">From</Label>
+                  <Input id="dash-date-from" type="datetime-local" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-9" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="dash-date-to" className="text-xs">To</Label>
+                  <Input id="dash-date-to" type="datetime-local" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-9" />
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="dash-time-from" className="text-xs">Time from (optional)</Label>
+                <Input id="dash-time-from" type="time" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} className="h-9" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="dash-time-to" className="text-xs">Time to (optional)</Label>
+                <Input id="dash-time-to" type="time" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} className="h-9" />
+              </div>
+            </div>
+
+            {dateBounds.error ? (
+              <p className="text-xs text-destructive">{dateBounds.error}</p>
+            ) : datePreset !== 'all' || hasTimeFilter ? (
+              <p className="text-xs text-muted-foreground">
+                Showing {records.length} record{records.length === 1 ? '' : 's'} · {activity.length} event{activity.length === 1 ? '' : 's'} in window
+                {hasTimeFilter ? ` · ${timeFrom || '00:00'}–${timeTo || '23:59'}` : ''}
+              </p>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
 
@@ -276,7 +535,7 @@ export function TeacherDashboardPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <ChartCard title="Submissions — last 24 hours" description="How many students submitted over time.">
+        <ChartCard title="Submissions" description={submissionChartDescription}>
           <BarChart
             data={{
               labels: buckets.map((b) => b.label),
@@ -306,7 +565,7 @@ export function TeacherDashboardPage() {
           />
         </ChartCard>
 
-        <ChartCard title="Question difficulty" description="Your question bank by difficulty.">
+        <ChartCard title="Question difficulty" description="Click a bar to see the questions. Your question bank by difficulty.">
           <BarChart
             data={{
               labels: ['Easy', 'Medium', 'Hard'],
@@ -318,7 +577,29 @@ export function TeacherDashboardPage() {
                 },
               ],
             }}
+            onBarClick={(idx) => {
+              const map: ('easy' | 'medium' | 'hard')[] = ['easy', 'medium', 'hard']
+              setActiveDifficulty(map[idx] ?? null)
+              setDifficultySearch('')
+            }}
           />
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {(['easy', 'medium', 'hard'] as const).map((level) => (
+              <Button
+                key={level}
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2.5 text-xs capitalize"
+                onClick={() => {
+                  setActiveDifficulty(level)
+                  setDifficultySearch('')
+                }}
+              >
+                View {level} ({difficultyCounts[level]})
+              </Button>
+            ))}
+          </div>
         </ChartCard>
 
         <ChartCard title="Average time used per exam" description="Seconds per submitted exam (top 8).">
@@ -409,6 +690,94 @@ export function TeacherDashboardPage() {
           Pick an exam <ArrowRight className="h-4 w-4" />
         </Link>
       </div>
+
+      <Dialog
+        open={!!activeDifficulty}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActiveDifficulty(null)
+            setDifficultySearch('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="capitalize">
+              {activeDifficulty ? `${activeDifficulty} questions` : 'Questions'} ({filteredDifficultyQuestions.length})
+            </DialogTitle>
+            <DialogDescription>All questions at this difficulty across your banks. Click a chip to open the bank or exam.</DialogDescription>
+          </DialogHeader>
+
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search question, category, or bank..."
+              value={difficultySearch}
+              onChange={(e) => setDifficultySearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          {difficultyDetailQuery.isLoading || examQuestionsQuery.isLoading ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          ) : filteredDifficultyQuestions.length === 0 ? (
+            <div className="py-8 text-center">
+              <FileQuestion className="mx-auto h-8 w-8 text-muted-foreground" />
+              <p className="mt-2 text-sm font-medium">{difficultySearch ? `No match for "${difficultySearch}"` : `No ${activeDifficulty} questions yet.`}</p>
+              <p className="text-xs text-muted-foreground">Try a different search or create questions in your banks.</p>
+            </div>
+          ) : (
+            <ScrollArea className="h-[min(60vh,32rem)] pr-3">
+              <div className="space-y-3">
+                {filteredDifficultyQuestions.map((q) => {
+                  const exams = questionUsageMap.get(q.id) ?? []
+                  return (
+                    <div key={q.id} className="rounded-lg border p-3">
+                      <p className="line-clamp-3 text-sm font-medium leading-snug" title={q.content}>
+                        {q.content}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <Badge variant={q.difficulty === 'easy' ? 'success' : q.difficulty === 'hard' ? 'destructive' : 'warning'} className="capitalize">
+                          {q.difficulty}
+                        </Badge>
+                        {q.category ? <Badge variant="secondary">{q.category}</Badge> : null}
+                        <Badge variant="outline">{q.points} pts</Badge>
+                        <span className="text-xs text-muted-foreground">{formatDateTime(q.created_at)}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="font-medium text-muted-foreground">Bank:</span>
+                        {q.question_bank ? (
+                          <Link to={`/teacher/banks/${q.question_bank.id}`}>
+                            <Badge variant="secondary" className="hover:bg-secondary/80 cursor-pointer">
+                              {q.question_bank.name}
+                            </Badge>
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="font-medium text-muted-foreground">Used in:</span>
+                        {exams.length === 0 ? (
+                          <span className="text-muted-foreground">Not yet added to any exam</span>
+                        ) : (
+                          exams.map((ex) => (
+                            <Link key={ex.id} to={`/teacher/exams/${ex.id}`}>
+                              <Badge variant="outline" className="hover:bg-muted cursor-pointer">
+                                {ex.title}
+                              </Badge>
+                            </Link>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </ScrollArea>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

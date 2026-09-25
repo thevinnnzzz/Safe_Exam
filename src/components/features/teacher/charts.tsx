@@ -42,8 +42,21 @@ const baseScaleOptions: ChartOptions<'bar'> = {
   },
 }
 
-export function BarChart({ data }: { data: ChartData<'bar'> }) {
-  return <Bar data={data} options={baseScaleOptions} />
+export function BarChart({ data, onBarClick }: { data: ChartData<'bar'>; onBarClick?: (index: number) => void }) {
+  const options: ChartOptions<'bar'> = onBarClick
+    ? {
+        ...baseScaleOptions,
+        onClick: (_event, elements) => {
+          const first = (elements as { index: number }[])[0]
+          if (first) onBarClick(first.index)
+        },
+        onHover: (event, elements) => {
+          const canvas = event.native?.target as HTMLElement | null
+          if (canvas) canvas.style.cursor = elements.length > 0 ? 'pointer' : ''
+        },
+      }
+    : baseScaleOptions
+  return <Bar data={data} options={options} />
 }
 
 export function LineChart({ data }: { data: ChartData<'line'> }) {
